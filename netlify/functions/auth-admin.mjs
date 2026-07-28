@@ -18,7 +18,11 @@ function cleanEmail(value) {
 
 function validPassword(value) {
   const password = String(value || '');
-  return password.length >= 10 && /[a-z]/.test(password) && /[A-Z]/.test(password) && /\d/.test(password) && /[^A-Za-z0-9]/.test(password);
+  return password.length >= 10
+    && /[a-z]/.test(password)
+    && /[A-Z]/.test(password)
+    && /\d/.test(password)
+    && /[^A-Za-z0-9]/.test(password);
 }
 
 async function readJson(res) {
@@ -48,6 +52,16 @@ async function sbFetch(url, secretKey, path, options = {}) {
   return data;
 }
 
+async function getProfile(url, secretKey, userId) {
+  const rows = await sbFetch(
+    url,
+    secretKey,
+    `/rest/v1/profiles?id=eq.${encodeURIComponent(userId)}&select=id,email,role,status,created_by,must_change_password&limit=1`,
+    { method: 'GET' },
+  );
+  return Array.isArray(rows) ? rows[0] : null;
+}
+
 async function getCaller(request, url, publishableKey, secretKey) {
   const authHeader = request.headers.get('authorization') || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
@@ -59,19 +73,43 @@ async function getCaller(request, url, publishableKey, secretKey) {
   const user = await readJson(userRes);
   if (!userRes.ok || !user.id) throw new Error('Invalid or expired session.');
 
-  const profiles = await sbFetch(url, secretKey, `/rest/v1/profiles?id=eq.${encodeURIComponent(user.id)}&select=id,email,role,status&limit=1`, {
-    method: 'GET',
-  });
-  const profile = Array.isArray(profiles) ? profiles[0] : null;
+  const profile = await getProfile(url, secretKey, user.id);
   if (!profile) throw new Error('User profile not found.');
   if (String(profile.status).toUpperCase() === 'INACTIVE') throw new Error('This account is inactive.');
   return { user, profile, token };
 }
 
-async function requireAdmin(request, url, publishableKey, secretKey) {
+async function requireUserManager(request, url, publishableKey, secretKey) {
   const caller = await getCaller(request, url, publishableKey, secretKey);
-  if (String(caller.profile.role).toUpperCase() !== 'ADMIN') throw new Error('Super Admin permission is required.');
+  const role = String(caller.profile.role).toUpperCase();
+  if (!['ADMIN', 'MANAGER'].includes(role)) throw new Error('User Management permission is required.');
   return caller;
+}
+
+function assertCanCreate(caller, role) {
+  const callerRole = String(caller.profile.role).toUpperCase();
+  if (!['MANAGER', 'EXECUTIVE'].includes(role)) throw new Error('Role must be Manager or Executive.');
+  if (callerRole === 'MANAGER' && role !== 'EXECUTIVE') {
+    throw new Error('Managers can create Executive accounts only.');
+  }
+}
+
+function assertCanManage(caller, target, desiredRole = '') {
+  if (!target) throw new Error('Target user profile not found.');
+  const callerRole = String(caller.profile.role).toUpperCase();
+  const targetRole = String(target.role).toUpperCase();
+  if (targetRole === 'ADMIN') throw new Error('The Super Admin account is protected.');
+
+  if (callerRole === 'ADMIN') {
+    if (desiredRole && !['MANAGER', 'EXECUTIVE'].includes(desiredRole)) throw new Error('Invalid role assignment.');
+    return;
+  }
+
+  const createdByCaller = String(target.created_by || '') === String(caller.user.id);
+  if (callerRole !== 'MANAGER' || targetRole !== 'EXECUTIVE' || !createdByCaller) {
+    throw new Error('Managers can manage only Executive accounts they created.');
+  }
+  if (desiredRole && desiredRole !== 'EXECUTIVE') throw new Error('Managers cannot assign Manager or Super Admin roles.');
 }
 
 async function profileExists(url, secretKey) {
@@ -88,6 +126,21 @@ async function insertProfile(url, secretKey, profile) {
   return Array.isArray(rows) ? rows[0] : rows;
 }
 
+async function patchProfile(url, secretKey, userId, changes) {
+  await sbFetch(url, secretKey, `/rest/v1/profiles?id=eq.${encodeURIComponent(userId)}`, {
+    method: 'PATCH',
+    headers: { Prefer: 'return=minimal' },
+    body: JSON.stringify(changes),
+  });
+}
+
+async function updateAuthUser(url, secretKey, userId, changes) {
+  return sbFetch(url, secretKey, `/auth/v1/admin/users/${encodeURIComponent(userId)}`, {
+    method: 'PUT',
+    body: JSON.stringify(changes),
+  });
+}
+
 async function deleteAuthUser(url, secretKey, userId) {
   await sbFetch(url, secretKey, `/auth/v1/admin/users/${encodeURIComponent(userId)}`, { method: 'DELETE' });
 }
@@ -98,7 +151,6 @@ export default async (request) => {
   const supabaseUrl = env('SUPABASE_URL').replace(/\/$/, '');
   const publishableKey = env('SUPABASE_PUBLISHABLE_KEY', env('SUPABASE_ANON_KEY'));
   const secretKey = env('SUPABASE_SECRET_KEY', env('SUPABASE_SERVICE_ROLE_KEY'));
-  const appUrl = env('APP_URL', env('URL', new URL(request.url).origin)).replace(/\/$/, '');
   if (!supabaseUrl || !publishableKey || !secretKey) {
     return response(500, { error: 'Supabase environment variables are not configured.' });
   }
@@ -117,7 +169,12 @@ export default async (request) => {
 
       const created = await sbFetch(supabaseUrl, secretKey, '/auth/v1/admin/users', {
         method: 'POST',
-        body: JSON.stringify({ email, password, email_confirm: true, user_metadata: { full_name: fullName } }),
+        body: JSON.stringify({
+          email,
+          password,
+          email_confirm: true,
+          user_metadata: { full_name: fullName },
+        }),
       });
       const user = created.user || created;
       try {
@@ -127,6 +184,7 @@ export default async (request) => {
           email,
           role: 'ADMIN',
           status: 'ACTIVE',
+          must_change_password: false,
           activated_at: new Date().toISOString(),
         });
       } catch (error) {
@@ -136,39 +194,54 @@ export default async (request) => {
       return response(201, { ok: true });
     }
 
-    if (action === 'activate') {
+    if (action === 'change-own-password') {
       const caller = await getCaller(request, supabaseUrl, publishableKey, secretKey);
-      await sbFetch(supabaseUrl, secretKey, `/rest/v1/profiles?id=eq.${encodeURIComponent(caller.user.id)}`, {
-        method: 'PATCH',
-        headers: { Prefer: 'return=minimal' },
-        body: JSON.stringify({ status: 'ACTIVE', activated_at: new Date().toISOString() }),
+      const newPassword = String(body.newPassword || '');
+      if (!validPassword(newPassword)) {
+        return response(400, { error: 'Password must have 10+ characters with uppercase, lowercase, number and special character.' });
+      }
+      await updateAuthUser(supabaseUrl, secretKey, caller.user.id, { password: newPassword });
+      await patchProfile(supabaseUrl, secretKey, caller.user.id, {
+        status: 'ACTIVE',
+        must_change_password: false,
+        activated_at: new Date().toISOString(),
       });
       return response(200, { ok: true });
     }
 
-    const caller = await requireAdmin(request, supabaseUrl, publishableKey, secretKey);
+    const caller = await requireUserManager(request, supabaseUrl, publishableKey, secretKey);
 
-    if (action === 'invite') {
+    if (action === 'create') {
       const fullName = String(body.fullName || '').trim();
       const email = cleanEmail(body.email);
       const role = String(body.role || '').toUpperCase();
+      const temporaryPassword = String(body.temporaryPassword || '');
       if (!fullName || !email) return response(400, { error: 'Full name and email are required.' });
-      if (!['MANAGER', 'EXECUTIVE'].includes(role)) return response(400, { error: 'Role must be Manager or Executive.' });
-      const redirectTo = `${appUrl}/?auth=invite`;
-      const invited = await sbFetch(supabaseUrl, secretKey, `/auth/v1/invite?redirect_to=${encodeURIComponent(redirectTo)}`, {
+      assertCanCreate(caller, role);
+      if (!validPassword(temporaryPassword)) {
+        return response(400, { error: 'Temporary password must have 10+ characters with uppercase, lowercase, number and special character.' });
+      }
+
+      const created = await sbFetch(supabaseUrl, secretKey, '/auth/v1/admin/users', {
         method: 'POST',
-        body: JSON.stringify({ email, data: { full_name: fullName, role } }),
+        body: JSON.stringify({
+          email,
+          password: temporaryPassword,
+          email_confirm: true,
+          user_metadata: { full_name: fullName },
+        }),
       });
-      const user = invited.user || invited;
+      const user = created.user || created;
       try {
         await insertProfile(supabaseUrl, secretKey, {
           id: user.id,
           full_name: fullName,
           email,
           role,
-          status: 'INVITED',
-          invited_by: caller.user.id,
-          invited_at: new Date().toISOString(),
+          status: 'ACTIVE',
+          must_change_password: true,
+          created_by: caller.user.id,
+          activated_at: new Date().toISOString(),
         });
       } catch (error) {
         if (user.id) await deleteAuthUser(supabaseUrl, secretKey, user.id).catch(() => {});
@@ -183,12 +256,30 @@ export default async (request) => {
       const role = String(body.role || '').toUpperCase();
       const status = String(body.status || '').toUpperCase();
       if (!userId || !fullName) return response(400, { error: 'User and full name are required.' });
-      if (!['MANAGER', 'EXECUTIVE'].includes(role)) return response(400, { error: 'Only Manager and Executive roles can be assigned here.' });
-      if (!['INVITED', 'ACTIVE', 'INACTIVE'].includes(status)) return response(400, { error: 'Invalid user status.' });
-      await sbFetch(supabaseUrl, secretKey, `/rest/v1/profiles?id=eq.${encodeURIComponent(userId)}`, {
-        method: 'PATCH',
-        headers: { Prefer: 'return=minimal' },
-        body: JSON.stringify({ full_name: fullName, role, status }),
+      if (!['ACTIVE', 'INACTIVE', 'INVITED'].includes(status)) return response(400, { error: 'Invalid user status.' });
+      const target = await getProfile(supabaseUrl, secretKey, userId);
+      assertCanManage(caller, target, role);
+
+      await updateAuthUser(supabaseUrl, secretKey, userId, {
+        user_metadata: { full_name: fullName },
+      });
+      await patchProfile(supabaseUrl, secretKey, userId, { full_name: fullName, role, status });
+      return response(200, { ok: true });
+    }
+
+    if (action === 'reset-password') {
+      const userId = String(body.userId || '');
+      const temporaryPassword = String(body.temporaryPassword || '');
+      if (!userId) return response(400, { error: 'User ID is required.' });
+      if (!validPassword(temporaryPassword)) {
+        return response(400, { error: 'Temporary password must have 10+ characters with uppercase, lowercase, number and special character.' });
+      }
+      const target = await getProfile(supabaseUrl, secretKey, userId);
+      assertCanManage(caller, target);
+      await updateAuthUser(supabaseUrl, secretKey, userId, { password: temporaryPassword });
+      await patchProfile(supabaseUrl, secretKey, userId, {
+        status: 'ACTIVE',
+        must_change_password: true,
       });
       return response(200, { ok: true });
     }
@@ -197,6 +288,8 @@ export default async (request) => {
       const userId = String(body.userId || '');
       if (!userId) return response(400, { error: 'User ID is required.' });
       if (userId === caller.user.id) return response(400, { error: 'You cannot delete your own signed-in account.' });
+      const target = await getProfile(supabaseUrl, secretKey, userId);
+      assertCanManage(caller, target);
       await deleteAuthUser(supabaseUrl, secretKey, userId);
       return response(200, { ok: true });
     }
@@ -204,7 +297,7 @@ export default async (request) => {
     return response(400, { error: 'Unsupported authentication action.' });
   } catch (error) {
     const message = error.message || 'Authentication action failed.';
-    const status = /permission|required|session|inactive/i.test(message) ? 403 : 400;
+    const status = /permission|required|session|inactive|protected|Managers can/i.test(message) ? 403 : 400;
     return response(status, { error: message });
   }
 };

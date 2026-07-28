@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description" content="Factory ERP with secure Supabase invitations, password setup and role-based access" />
+  <meta name="description" content="Factory ERP with Supabase temporary passwords, forced first-login password change and role-based access" />
   <title>Factory ERP</title>
   <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
   <style>
@@ -470,7 +470,7 @@ tbody tr:hover { background: color-mix(in srgb, var(--primary-soft) 35%, transpa
     { id: 'shortages', label: 'Shortages & Issues', icon: ICONS.shortage, roles: ['ADMIN','MANAGER','EXECUTIVE'], section: 'Operations' },
     { id: 'import', label: 'Excel Import', icon: ICONS.import, roles: ['ADMIN','MANAGER'], section: 'Data & Reports' },
     { id: 'reports', label: 'Reports', icon: ICONS.reports, roles: ['ADMIN','MANAGER','EXECUTIVE'], section: 'Data & Reports' },
-    { id: 'users', label: 'User Management', icon: ICONS.users, roles: ['ADMIN'], section: 'Administration' },
+    { id: 'users', label: 'User Management', icon: ICONS.users, roles: ['ADMIN','MANAGER'], section: 'Administration' },
     { id: 'audit', label: 'Audit Logs', icon: ICONS.audit, roles: ['ADMIN'], section: 'Administration' },
     { id: 'settings', label: 'Settings & Backup', icon: ICONS.settings, roles: ['ADMIN'], section: 'Administration' }
   ];
@@ -571,9 +571,21 @@ tbody tr:hover { background: color-mix(in srgb, var(--primary-soft) 35%, transpa
   }
   function canManageUser(target) {
     const current = getCurrentUser();
-    if (!current || !target) return false;
+    if (!current || !target || target.role === 'ADMIN' || target.id === current.id) return false;
     if (current.role === 'ADMIN') return true;
-    return current.role === 'MANAGER' && target.role === 'EXECUTIVE' && manageableExecutives(current.id).some(u => u.id === target.id);
+    return current.role === 'MANAGER' && target.role === 'EXECUTIVE' && target.createdBy === current.id;
+  }
+  function generateTemporaryPassword(length = 14) {
+    const groups = ['ABCDEFGHJKLMNPQRSTUVWXYZ', 'abcdefghijkmnopqrstuvwxyz', '23456789', '!@#$%&*?'];
+    const all = groups.join('');
+    const pick = chars => chars[crypto.getRandomValues(new Uint32Array(1))[0] % chars.length];
+    const chars = groups.map(pick);
+    while (chars.length < length) chars.push(pick(all));
+    for (let i = chars.length - 1; i > 0; i--) {
+      const j = crypto.getRandomValues(new Uint32Array(1))[0] % (i + 1);
+      [chars[i], chars[j]] = [chars[j], chars[i]];
+    }
+    return chars.join('');
   }
   function projectById(id) { return state.projects.find(p => p.id === id); }
   function userById(id) { return state.users.find(u => u.id === id); }
@@ -648,18 +660,18 @@ tbody tr:hover { background: color-mix(in srgb, var(--primary-soft) 35%, transpa
           <div class="brand-lockup"><div class="brand-mark">ERP</div><div><h1>${esc(state.settings.companyName)}</h1><p>Manufacturing Operations Platform</p></div></div>
           <div class="auth-hero">
             <h2>Control every production stage from one place.</h2>
-            <p>Secure user invitations, role-based access, projects, BOM items, shortages, reports and production tracking.</p>
+            <p>Secure temporary passwords, forced first-login password changes, role-based access, projects, BOM items, shortages, reports and production tracking.</p>
             <div class="auth-stats">
               <div class="auth-stat"><strong>9</strong><span>Production stages</span></div>
               <div class="auth-stat"><strong>3</strong><span>Role levels</span></div>
-              <div class="auth-stat"><strong>24h</strong><span>Recommended link expiry</span></div>
+              <div class="auth-stat"><strong>1×</strong><span>Temporary password</span></div>
             </div>
           </div>
-          <div class="auth-foot">Supabase Auth + Netlify Functions • Passwords are never stored in browser data</div>
+          <div class="auth-foot">Supabase Auth + Netlify Functions • SMTP and invitation emails are not required</div>
         </section>
         <section class="auth-panel"><div class="auth-card">
           ${authMessage ? `<div class="info-banner ${authMessage.startsWith('ERROR:') ? 'danger' : ''}"><div>${authMessage.startsWith('ERROR:') ? '!' : '✓'}</div><div><p>${esc(authMessage.replace(/^ERROR:\s*/,''))}</p></div></div>` : ''}
-          ${setupRequired ? setupForm() : authView === 'forgot' ? forgotPasswordForm() : loginForm()}
+          ${setupRequired ? setupForm() : loginForm()}
         </div></section>
       </div>`;
     bindAuthEvents();
@@ -682,39 +694,27 @@ tbody tr:hover { background: color-mix(in srgb, var(--primary-soft) 35%, transpa
   function loginForm() {
     return `
       <h2>Welcome back</h2>
-      <p>Sign in with the password you created from your invitation email.</p>
+      <p>Sign in using your email address and password. New users must use the temporary password supplied by their administrator.</p>
       <form id="login-form">
         <div class="form-group"><label>Email Address</label><input name="email" type="email" required placeholder="name@company.com" autocomplete="username"></div>
         <div class="form-group"><label>Password</label><input name="password" type="password" required placeholder="Enter password" autocomplete="current-password"></div>
-        <div class="auth-row"><button type="button" class="auth-link" id="forgot-password-link">Forgot Password?</button></div>
+        <div class="auth-note">Forgot your password? Contact your Super Admin or Manager for a temporary password reset.</div>
         <button class="btn btn-primary btn-lg w-100" type="submit">Sign in</button>
       </form>`;
   }
 
-  function forgotPasswordForm() {
-    return `
-      <h2>Forgot Password</h2>
-      <p>Enter your registered email address. Supabase will send a secure password-reset link.</p>
-      <form id="forgot-form">
-        <div class="form-group"><label>Email Address</label><input name="email" type="email" required placeholder="name@company.com" autocomplete="email"></div>
-        <button class="btn btn-primary btn-lg w-100" type="submit">Send Reset Link</button>
-        <button class="btn btn-secondary btn-lg w-100 auth-secondary" type="button" id="back-login">Back to Sign In</button>
-      </form>`;
-  }
-
   function renderSetPassword() {
-    const isInvite = passwordFlow === 'invite';
     document.getElementById('app').innerHTML = `
       <div class="auth-shell">
-        <section class="auth-visual"><div class="brand-lockup"><div class="brand-mark">ERP</div><div><h1>${esc(state.settings.companyName)}</h1><p>Secure Account Activation</p></div></div><div class="auth-hero"><h2>${isInvite ? 'Welcome to the ERP System.' : 'Create a new password.'}</h2><p>${isInvite ? 'Your invitation was verified. Create your password to activate the account.' : 'Your reset link was verified. Choose a new secure password.'}</p></div><div class="auth-foot">The secure link is single-use and managed by Supabase Auth.</div></section>
+        <section class="auth-visual"><div class="brand-lockup"><div class="brand-mark">ERP</div><div><h1>${esc(state.settings.companyName)}</h1><p>Required Password Change</p></div></div><div class="auth-hero"><h2>Create your private password.</h2><p>Your administrator supplied a temporary password. Replace it now before accessing the ERP.</p></div><div class="auth-foot">The new password is securely hashed and stored by Supabase Auth.</div></section>
         <section class="auth-panel"><div class="auth-card">
-          <h2>${isInvite ? 'Set Password' : 'Reset Password'}</h2>
+          <h2>Change Temporary Password</h2>
           <p>${esc(authSession?.user?.email || '')}</p>
           <form id="set-password-form">
             <div class="form-group"><label>New Password</label><input name="password" type="password" required minlength="10" autocomplete="new-password"></div>
             <div class="form-group"><label>Confirm Password</label><input name="confirm" type="password" required minlength="10" autocomplete="new-password"></div>
             <div class="password-rules">Minimum 10 characters, including uppercase, lowercase, number and special character.</div>
-            <button class="btn btn-primary btn-lg w-100" type="submit">Save Password & Continue</button>
+            <button class="btn btn-primary btn-lg w-100" type="submit">Save New Password</button>
           </form>
         </div></section>
       </div>`;
@@ -758,7 +758,11 @@ tbody tr:hover { background: color-mix(in srgb, var(--primary-soft) 35%, transpa
       authSession = data.session;
       try {
         await syncProfiles();
-        if (!currentProfile || currentProfile.status !== 'Active') throw new Error('This account is not active. Use the invitation link or contact the Super Admin.');
+        if (!currentProfile || currentProfile.status !== 'Active') throw new Error('This account is not active. Contact the Super Admin.');
+        if (currentProfile.mustChangePassword) {
+          passwordFlow = 'forced'; authView = 'set-password'; authMessage = ''; render();
+          return;
+        }
         currentRoute = 'dashboard'; authMessage = ''; render();
         audit('LOGIN', 'Authentication', 'User signed in', currentProfile.id); saveState();
       } catch (err) {
@@ -767,19 +771,6 @@ tbody tr:hover { background: color-mix(in srgb, var(--primary-soft) 35%, transpa
       } finally { setFormBusy(login, false); }
     });
 
-    document.getElementById('forgot-password-link')?.addEventListener('click', () => { authView = 'forgot'; authMessage = ''; render(); });
-    document.getElementById('back-login')?.addEventListener('click', () => { authView = 'login'; authMessage = ''; render(); });
-    const forgot = document.getElementById('forgot-form');
-    if (forgot) forgot.addEventListener('submit', async e => {
-      e.preventDefault();
-      const email = String(new FormData(forgot).get('email') || '').trim().toLowerCase();
-      setFormBusy(forgot, true);
-      const redirectTo = `${location.origin}${location.pathname}?auth=recovery`;
-      const { error } = await supabaseClient.auth.resetPasswordForEmail(email, { redirectTo });
-      setFormBusy(forgot, false);
-      if (error) return toast('Unable to send reset email', error.message, 'error');
-      authView = 'login'; authMessage = 'If the email is registered, a secure password-reset link has been sent.'; render();
-    });
   }
 
   function setFormBusy(form, busy) {
@@ -793,13 +784,10 @@ tbody tr:hover { background: color-mix(in srgb, var(--primary-soft) 35%, transpa
     if (!strongPassword(password)) return toast('Weak password', 'Use 10+ characters with uppercase, lowercase, number and special character.', 'error');
     setFormBusy(form, true);
     try {
-      const { error } = await supabaseClient.auth.updateUser({ password });
-      if (error) throw error;
-      if (passwordFlow === 'invite') await callAuthAdmin('activate', {});
+      await callAuthAdmin('change-own-password', { newPassword: password });
       await supabaseClient.auth.signOut();
       authSession = null; currentProfile = null; passwordFlow = ''; authView = 'login';
-      history.replaceState({}, document.title, location.pathname);
-      authMessage = 'Password saved successfully. Sign in using your email and new password.';
+      authMessage = 'Password changed successfully. Sign in using your email and new password.';
       render();
     } catch (error) { toast('Password update failed', error.message, 'error'); }
     finally { setFormBusy(form, false); }
@@ -820,9 +808,9 @@ tbody tr:hover { background: color-mix(in srgb, var(--primary-soft) 35%, transpa
 
   async function syncProfiles() {
     if (!supabaseClient || !authSession) return;
-    const { data, error } = await supabaseClient.from('profiles').select('id,full_name,email,role,status,invited_at,activated_at,created_at').order('created_at', { ascending: true });
+    const { data, error } = await supabaseClient.from('profiles').select('id,full_name,email,role,status,must_change_password,created_by,invited_at,activated_at,created_at').order('created_at', { ascending: true });
     if (error) throw error;
-    state.users = (data || []).map(row => ({ id: row.id, name: row.full_name, email: row.email, role: row.role, status: titleCase(row.status), invitedAt: row.invited_at, activatedAt: row.activated_at, createdAt: row.created_at }));
+    state.users = (data || []).map(row => ({ id: row.id, name: row.full_name, email: row.email, role: row.role, status: titleCase(row.status), mustChangePassword: Boolean(row.must_change_password), createdBy: row.created_by || '', invitedAt: row.invited_at, activatedAt: row.activated_at, createdAt: row.created_at }));
     currentProfile = state.users.find(user => user.id === authSession.user.id) || null;
     saveState();
   }
@@ -838,21 +826,17 @@ tbody tr:hover { background: color-mix(in srgb, var(--primary-soft) 35%, transpa
       appConfig = config; setupRequired = Boolean(config.setupRequired);
       if (!window.supabase?.createClient) throw new Error('Supabase client library did not load. Check the internet connection.');
       supabaseClient = window.supabase.createClient(config.supabaseUrl, config.supabasePublishableKey, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
-      const requestedFlow = new URLSearchParams(location.search).get('auth');
       const { data, error } = await supabaseClient.auth.getSession();
       if (error) throw error;
       authSession = data.session;
-      if (requestedFlow === 'invite' || requestedFlow === 'recovery') {
-        passwordFlow = requestedFlow;
-        authView = authSession ? 'set-password' : 'login';
-        if (!authSession) authMessage = 'ERROR:The secure link is invalid or has expired. Request a new link.';
-      }
       if (authSession) {
         await syncProfiles();
-        if (authView !== 'set-password' && currentProfile?.status !== 'Active') {
+        if (currentProfile?.status !== 'Active') {
           await supabaseClient.auth.signOut();
           authSession = null; currentProfile = null;
-          authMessage = 'ERROR:This account is not active. Use the invitation email or contact the Super Admin.';
+          authMessage = 'ERROR:This account is not active. Contact the Super Admin.';
+        } else if (currentProfile?.mustChangePassword) {
+          passwordFlow = 'forced'; authView = 'set-password';
         }
       }
       authInitialized = true;
@@ -860,13 +844,14 @@ tbody tr:hover { background: color-mix(in srgb, var(--primary-soft) 35%, transpa
       supabaseClient.auth.onAuthStateChange((event, nextSession) => {
         setTimeout(async () => {
           authSession = nextSession;
-          if (event === 'PASSWORD_RECOVERY') { passwordFlow = 'recovery'; authView = 'set-password'; }
           if (nextSession) {
             try {
               await syncProfiles();
-              if (authView !== 'set-password' && currentProfile?.status !== 'Active') {
+              if (currentProfile?.status !== 'Active') {
                 await supabaseClient.auth.signOut(); authSession = null; currentProfile = null;
-                authMessage = 'ERROR:This account is not active. Use the invitation email or contact the Super Admin.';
+                authMessage = 'ERROR:This account is not active. Contact the Super Admin.';
+              } else if (currentProfile?.mustChangePassword) {
+                passwordFlow = 'forced'; authView = 'set-password';
               }
             } catch (error) { console.error('Profile sync failed', error); }
           } else currentProfile = null;
@@ -1283,44 +1268,116 @@ tbody tr:hover { background: color-mix(in srgb, var(--primary-soft) 35%, transpa
   function exportCurrentReport(){const d=getReportData(),csv=[d.headers.map(csvCell).join(','),...d.rows.map(r=>r.map(csvCell).join(','))].join('\n');downloadBlob('\uFEFF'+csv,`${d.title.toLowerCase().replace(/[^a-z0-9]+/g,'-')}.csv`,'text/csv;charset=utf-8');audit('EXPORT','Reports',`Exported ${d.title}`);saveState();toast('Report exported');}
 
   function renderUsers() {
-    if (!requireRole('ADMIN')) return;
-    setPageTitle('User Management','Secure invitations and role management');
-    const current = getCurrentUser(), users = state.users;
+    if (!requireRole('ADMIN','MANAGER')) return;
+    setPageTitle('User Management','Temporary passwords and role management');
+    const current = getCurrentUser();
+    const users = current.role === 'ADMIN'
+      ? state.users
+      : [current, ...state.users.filter(u => u.role === 'EXECUTIVE' && u.createdBy === current.id)];
+    const uniqueUsers = [...new Map(users.map(u => [u.id, u])).values()];
     const page = document.getElementById('page-content');
-    page.innerHTML = `${pageToolbar('User Management','Create Managers and Executives. New users receive a secure Set Password email.','<button class="btn btn-primary" id="add-user">+ Invite User</button>')}
-      <section class="card table-card"><div class="table-wrap"><table><thead><tr><th>User</th><th>Email</th><th>Role</th><th>Assigned Projects</th><th>Status</th><th>Invited / Created</th><th>Action</th></tr></thead><tbody>${users.length ? users.map(u => `<tr><td><div class="input-row"><div class="avatar">${initials(u.name)}</div><div><strong>${esc(u.name)}</strong><div class="small muted">${esc(u.id)}</div></div></div></td><td>${esc(u.email)}</td><td><span class="role-chip">${esc(roleLabel(u.role))}</span></td><td>${state.projects.filter(p=>p.managerId===u.id||(p.executiveIds||[]).includes(u.id)).length}</td><td>${statusChip(u.status)}</td><td>${fmtDate(u.invitedAt || u.createdAt)}</td><td>${u.role === 'ADMIN' ? '<span class="small muted">Protected Admin</span>' : `<div class="table-actions"><button class="btn btn-secondary btn-sm" data-edit-user="${u.id}">Edit</button>${u.id !== current.id ? `<button class="btn btn-danger btn-sm" data-delete-user="${u.id}">Delete</button>` : ''}</div>`}</td></tr>`).join('') : `<tr><td colspan="7">${emptyState('♙','No users available','Invite a Manager or Executive to begin.')}</td></tr>`}</tbody></table></div></section>`;
+    page.innerHTML = `${pageToolbar('User Management','Create accounts with temporary passwords. Users must change the password at first login.','<button class="btn btn-primary" id="add-user">+ Create User</button>')}
+      <section class="card table-card"><div class="table-wrap"><table><thead><tr><th>User</th><th>Email</th><th>Role</th><th>Assigned Projects</th><th>Status</th><th>Password</th><th>Created</th><th>Action</th></tr></thead><tbody>${uniqueUsers.length ? uniqueUsers.map(u => {
+        const manageable = canManageUser(u);
+        const passwordState = u.mustChangePassword ? statusChip('Change Required') : statusChip('Password Set');
+        const actions = u.role === 'ADMIN' || u.id === current.id
+          ? '<span class="small muted">Protected account</span>'
+          : manageable
+            ? `<div class="table-actions"><button class="btn btn-secondary btn-sm" data-edit-user="${u.id}">Edit</button><button class="btn btn-secondary btn-sm" data-reset-user="${u.id}">Reset Password</button><button class="btn btn-danger btn-sm" data-delete-user="${u.id}">Delete</button></div>`
+            : '<span class="small muted">View only</span>';
+        return `<tr><td><div class="input-row"><div class="avatar">${initials(u.name)}</div><div><strong>${esc(u.name)}</strong><div class="small muted">${esc(u.id)}</div></div></div></td><td>${esc(u.email)}</td><td><span class="role-chip">${esc(roleLabel(u.role))}</span></td><td>${state.projects.filter(p=>p.managerId===u.id||(p.executiveIds||[]).includes(u.id)).length}</td><td>${statusChip(u.status)}</td><td>${passwordState}</td><td>${fmtDate(u.createdAt)}</td><td>${actions}</td></tr>`;
+      }).join('') : `<tr><td colspan="8">${emptyState('♙','No users available','Create a Manager or Executive to begin.')}</td></tr>`}</tbody></table></div></section>`;
     document.getElementById('add-user').onclick = () => openUserForm();
     document.querySelectorAll('[data-edit-user]').forEach(b => b.onclick = () => openUserForm(userById(b.dataset.editUser)));
+    document.querySelectorAll('[data-reset-user]').forEach(b => b.onclick = () => openPasswordReset(userById(b.dataset.resetUser)));
     document.querySelectorAll('[data-delete-user]').forEach(b => b.onclick = () => deleteUser(b.dataset.deleteUser));
   }
 
+  function passwordFields(prefix = 'Temporary') {
+    return `<div class="form-group"><label>${prefix} Password *</label><div class="input-row"><input name="temporaryPassword" type="text" required minlength="10" autocomplete="new-password" placeholder="Generate or enter a strong password"><button type="button" class="btn btn-secondary" id="generate-temp-password">Generate</button></div></div><div class="form-group"><label>Confirm ${prefix} Password *</label><input name="confirmTemporaryPassword" type="text" required minlength="10" autocomplete="new-password" placeholder="Repeat the temporary password"></div><div class="password-rules">Use 10+ characters with uppercase, lowercase, number and special character. The user must replace it at first login.</div>`;
+  }
+
+  function bindPasswordGenerator(form) {
+    const button = document.getElementById('generate-temp-password');
+    if (!button) return;
+    button.onclick = () => {
+      const password = generateTemporaryPassword();
+      form.elements.temporaryPassword.value = password;
+      form.elements.confirmTemporaryPassword.value = password;
+    };
+  }
+
   function openUserForm(user = null) {
-    if (!requireRole('ADMIN')) return;
-    const roles = ['MANAGER','EXECUTIVE'];
-    openModal(user ? 'Edit User' : 'Invite New User', `<form id="user-form"><div class="form-grid"><div class="form-group"><label>Full Name *</label><input name="name" required value="${esc(user?.name || '')}"></div><div class="form-group"><label>Email Address *</label><input name="email" type="email" required value="${esc(user?.email || '')}" ${user ? 'readonly' : ''}></div><div class="form-group"><label>Role *</label><select name="role">${roles.map(r => `<option value="${r}" ${user?.role === r ? 'selected' : ''}>${esc(roleLabel(r))}</option>`).join('')}</select></div>${user ? `<div class="form-group"><label>Status</label><select name="status"><option value="ACTIVE" ${user.status === 'Active' ? 'selected' : ''}>Active</option><option value="INACTIVE" ${user.status === 'Inactive' ? 'selected' : ''}>Inactive</option><option value="INVITED" ${user.status === 'Invited' ? 'selected' : ''}>Invited</option></select></div>` : ''}</div>${user ? '' : '<div class="info-banner"><div>✉</div><div><strong>No password is required</strong><p>The user will receive a secure invitation email and create their own password.</p></div></div>'}</form>`, `<button class="btn btn-secondary" data-close-modal>Cancel</button><button class="btn btn-primary" id="save-user">${user ? 'Save Changes' : 'Send Invitation'}</button>`);
+    if (!requireRole('ADMIN','MANAGER')) return;
+    const current = getCurrentUser();
+    if (user && !canManageUser(user)) return toast('Access denied','You cannot manage this user.','error');
+    const roles = current.role === 'ADMIN' ? ['MANAGER','EXECUTIVE'] : ['EXECUTIVE'];
+    openModal(user ? 'Edit User' : 'Create New User', `<form id="user-form"><div class="form-grid"><div class="form-group"><label>Full Name *</label><input name="name" required value="${esc(user?.name || '')}"></div><div class="form-group"><label>Email Address *</label><input name="email" type="email" required value="${esc(user?.email || '')}" ${user ? 'readonly' : ''}></div><div class="form-group"><label>Role *</label><select name="role">${roles.map(r => `<option value="${r}" ${user?.role === r ? 'selected' : ''}>${esc(roleLabel(r))}</option>`).join('')}</select></div>${user ? `<div class="form-group"><label>Status</label><select name="status"><option value="ACTIVE" ${user.status === 'Active' ? 'selected' : ''}>Active</option><option value="INACTIVE" ${user.status === 'Inactive' ? 'selected' : ''}>Inactive</option><option value="INVITED" ${user.status === 'Invited' ? 'selected' : ''}>Invited</option></select></div>` : passwordFields()}</div>${user ? '' : '<div class="info-banner"><div>🔐</div><div><strong>Temporary password workflow</strong><p>Share the temporary password privately. The user will be forced to create a new password after the first successful login.</p></div></div>'}</form>`, `<button class="btn btn-secondary" data-close-modal>Cancel</button><button class="btn btn-primary" id="save-user">${user ? 'Save Changes' : 'Create User'}</button>`);
+    const form = document.getElementById('user-form');
+    if (!user) bindPasswordGenerator(form);
     document.getElementById('save-user').onclick = async () => {
-      const form = document.getElementById('user-form'); if (!form.reportValidity()) return;
+      if (!form.reportValidity()) return;
       const fd = new FormData(form), fullName = String(fd.get('name')).trim(), email = String(fd.get('email')).trim().toLowerCase(), role = String(fd.get('role'));
-      if (!roles.includes(role)) return toast('Invalid role','Only Manager or Executive can be invited.','error');
+      if (!roles.includes(role)) return toast('Invalid role','You cannot assign that role.','error');
+      let temporaryPassword = '';
+      if (!user) {
+        temporaryPassword = String(fd.get('temporaryPassword') || '');
+        const confirmPassword = String(fd.get('confirmTemporaryPassword') || '');
+        if (temporaryPassword !== confirmPassword) return toast('Password mismatch','Both temporary password fields must match.','error');
+        if (!strongPassword(temporaryPassword)) return toast('Weak temporary password','Use 10+ characters with uppercase, lowercase, number and special character.','error');
+      }
       setFormBusy(form, true);
       try {
         if (user) {
           await callAuthAdmin('update', { userId: user.id, fullName, role, status: String(fd.get('status')) });
           audit('UPDATE','Users',`Updated ${roleLabel(role)} ${fullName}`,user.id);
+          await syncProfiles(); saveState(); closeModal(); renderUsers();
+          toast('User updated','The user profile was updated.');
         } else {
-          await callAuthAdmin('invite', { fullName, email, role });
-          audit('INVITE','Users',`Invited ${roleLabel(role)} ${fullName}`);
+          await callAuthAdmin('create', { fullName, email, role, temporaryPassword });
+          audit('CREATE','Users',`Created ${roleLabel(role)} ${fullName} with a temporary password`);
+          await syncProfiles(); saveState(); closeModal(); renderUsers();
+          showTemporaryCredentials(fullName, email, temporaryPassword, 'User created successfully');
         }
+      } catch (error) { toast(user ? 'Update failed' : 'User creation failed', error.message, 'error'); }
+      finally { setFormBusy(form, false); }
+    };
+  }
+
+  function showTemporaryCredentials(fullName, email, temporaryPassword, title) {
+    const credentials = `Factory ERP login\nEmail: ${email}\nTemporary password: ${temporaryPassword}\nThe password must be changed after first login.`;
+    openModal(title, `<div class="info-banner"><div>✓</div><div><strong>${esc(fullName)}</strong><p>The account is active and ready for first login. Share these details privately.</p></div></div><div class="form-group"><label>Login Email</label><input value="${esc(email)}" readonly></div><div class="form-group"><label>Temporary Password</label><input value="${esc(temporaryPassword)}" readonly></div><div class="auth-note">This password is displayed here for handover. The ERP does not store it in browser data, and the user must replace it at first login.</div>`, `<button class="btn btn-secondary" data-close-modal>Close</button><button class="btn btn-primary" id="copy-temp-credentials">Copy Login Details</button>`);
+    document.getElementById('copy-temp-credentials').onclick = async () => {
+      try { await navigator.clipboard.writeText(credentials); toast('Copied','Login details copied to the clipboard.'); }
+      catch { toast('Copy failed','Select and copy the details manually.','error'); }
+    };
+  }
+
+  function openPasswordReset(user) {
+    if (!user || !canManageUser(user)) return toast('Access denied','You cannot reset this user password.','error');
+    openModal('Reset Temporary Password', `<form id="password-reset-form"><div class="info-banner"><div>🔑</div><div><strong>${esc(user.name)}</strong><p>Set a new temporary password. All existing sessions may be invalidated, and the user must change it at the next login.</p></div></div>${passwordFields('New Temporary')}</form>`, `<button class="btn btn-secondary" data-close-modal>Cancel</button><button class="btn btn-primary" id="save-reset-password">Reset Password</button>`);
+    const form = document.getElementById('password-reset-form');
+    bindPasswordGenerator(form);
+    document.getElementById('save-reset-password').onclick = async () => {
+      if (!form.reportValidity()) return;
+      const fd = new FormData(form), temporaryPassword = String(fd.get('temporaryPassword') || ''), confirmPassword = String(fd.get('confirmTemporaryPassword') || '');
+      if (temporaryPassword !== confirmPassword) return toast('Password mismatch','Both temporary password fields must match.','error');
+      if (!strongPassword(temporaryPassword)) return toast('Weak temporary password','Use 10+ characters with uppercase, lowercase, number and special character.','error');
+      setFormBusy(form, true);
+      try {
+        await callAuthAdmin('reset-password', { userId: user.id, temporaryPassword });
+        audit('RESET PASSWORD','Users',`Issued a temporary password for ${user.name}`,user.id);
         await syncProfiles(); saveState(); closeModal(); renderUsers();
-        toast(user ? 'User updated' : 'Invitation sent', user ? 'The user profile was updated.' : `A Set Password email was sent to ${email}.`);
-      } catch (error) { toast(user ? 'Update failed' : 'Invitation failed', error.message, 'error'); }
+        showTemporaryCredentials(user.name, user.email, temporaryPassword, 'Password reset completed');
+      } catch (error) { toast('Password reset failed',error.message,'error'); }
       finally { setFormBusy(form, false); }
     };
   }
 
   async function deleteUser(id) {
-    if (!requireRole('ADMIN')) return;
+    if (!requireRole('ADMIN','MANAGER')) return;
     const current = getCurrentUser(), target = userById(id); if (!target) return;
+    if (!canManageUser(target)) return toast('Delete blocked','You cannot delete this account.','error');
     if (target.id === current.id) return toast('Delete blocked','You cannot delete your own signed-in account.','error');
     if (!confirm(`Delete user ${target.name}? This also removes their Supabase login.`)) return;
     try {
@@ -1341,10 +1398,10 @@ tbody tr:hover { background: color-mix(in srgb, var(--primary-soft) 35%, transpa
   function renderSettings() {
     setPageTitle('Settings & Backup','Configuration and operational data protection');
     const page=document.getElementById('page-content');page.innerHTML=`${pageToolbar('System Settings','Configure the ERP and manage operational data backups.')}
-      <div class="info-banner"><div>🔐</div><div><strong>Authentication is secured by Supabase</strong><p>Passwords, invitation links and reset links are managed by Supabase Auth. Operational records continue to use the existing browser-storage workflow.</p></div></div>
+      <div class="info-banner"><div>🔐</div><div><strong>Authentication is secured by Supabase</strong><p>Passwords are securely hashed by Supabase Auth. Super Admins and authorised Managers create temporary passwords, and users must change them at first login. Operational records continue to use the existing browser-storage workflow.</p></div></div>
       <div class="grid grid-2"><section class="card"><div class="card-header"><div><h3>Company Configuration</h3><p>Branding and display preferences</p></div></div><div class="card-body"><form id="settings-form"><div class="form-group"><label>Company / ERP Name</label><input name="companyName" value="${esc(state.settings.companyName)}"></div><div class="form-group"><label>Factory Name</label><input name="factoryName" value="${esc(state.settings.factoryName)}"></div><div class="setting-row"><div class="setting-copy"><strong>Dark Mode</strong><span>Use dark industrial interface</span></div><button type="button" class="toggle ${state.settings.theme==='dark'?'on':''}" id="settings-theme"></button></div><button class="btn btn-primary" type="submit" style="margin-top:16px">Save Settings</button></form></div></section>
       <section class="card"><div class="card-header"><div><h3>Backup & Restore</h3><p>Protect browser-stored ERP records</p></div></div><div class="card-body"><div class="setting-row"><div class="setting-copy"><strong>Download Full Backup</strong><span>Projects, production history, shortages and settings</span></div><button class="btn btn-secondary" id="download-backup">⇩ Backup</button></div><div class="setting-row"><div class="setting-copy"><strong>Restore Backup</strong><span>Replace current browser data from a JSON file</span></div><button class="btn btn-secondary" id="restore-backup">⇧ Restore</button></div><div class="setting-row"><div class="setting-copy"><strong class="text-danger">Reset All Data</strong><span>Delete all ERP records from this browser</span></div><button class="btn btn-danger" id="reset-data">Reset</button></div></div></section></div>
-      <section class="card" style="margin-top:18px"><div class="card-header"><div><h3>System Information</h3><p>Deployment characteristics</p></div></div><div class="card-body"><div class="grid grid-4">${miniMetric('Technology','HTML / CSS / JS')}${miniMetric('Authentication','Supabase Auth')}${miniMetric('Deployment','Netlify Functions')}${miniMetric('Version','6.0 Secure Invitations')}</div></div></section>`;
+      <section class="card" style="margin-top:18px"><div class="card-header"><div><h3>System Information</h3><p>Deployment characteristics</p></div></div><div class="card-body"><div class="grid grid-4">${miniMetric('Technology','HTML / CSS / JS')}${miniMetric('Authentication','Supabase Auth')}${miniMetric('Deployment','Netlify Functions')}${miniMetric('Version','7.0 Temporary Passwords')}</div></div></section>`;
     document.getElementById('settings-form').onsubmit=e=>{e.preventDefault();const fd=new FormData(e.target);state.settings.companyName=String(fd.get('companyName')||'Factory ERP');state.settings.factoryName=String(fd.get('factoryName')||'Main Manufacturing Unit');audit('UPDATE','Settings','Updated company configuration');saveState();renderAppShell();toast('Settings saved');};document.getElementById('settings-theme').onclick=toggleTheme;document.getElementById('download-backup').onclick=()=>downloadBlob(JSON.stringify(state,null,2),`factory-erp-backup-${todayISO()}.json`,'application/json');document.getElementById('restore-backup').onclick=()=>document.getElementById('backup-file-input').click();const backupInput=document.getElementById('backup-file-input');backupInput.value='';backupInput.onchange=async()=>{try{const data=JSON.parse(await backupInput.files[0].text());if(!data.projects||!data.items)throw new Error('Invalid backup format');if(!confirm('Restore this backup and replace current browser data?'))return;state={...defaultState(),...data,users:state.users};saveState();render();toast('Backup restored','Operational data was restored. Supabase users were not changed.');}catch(e){toast('Restore failed',e.message,'error');}};document.getElementById('reset-data').onclick=()=>{if(!confirm('This permanently deletes all local ERP data. Continue?'))return;if(!confirm('Final confirmation: delete everything?'))return;localStorage.removeItem(STORAGE_KEY);state={...defaultState(),users:state.users};saveState();render();};
   }
 
@@ -1358,7 +1415,6 @@ tbody tr:hover { background: color-mix(in srgb, var(--primary-soft) 35%, transpa
 
   initialiseAuthentication();
 })();
-
   </script>
 </body>
 </html>

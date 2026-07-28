@@ -40,7 +40,7 @@ export default async () => {
       supabaseUrl,
       supabasePublishableKey: publishableKey,
       setupRequired,
-      inviteExpiryHours: Number(env('INVITE_EXPIRY_HOURS', '24')) || 24,
+      authenticationMode: 'temporary-password',
     }), { status: 200, headers: JSON_HEADERS });
   } catch (error) {
     return new Response(JSON.stringify({ error: error.message || 'Configuration failed.' }), {

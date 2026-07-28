@@ -1,12 +1,14 @@
 -- Factory ERP secure user profiles for Supabase Auth
--- Run this once in Supabase Dashboard > SQL Editor.
+-- Run this once in Supabase Dashboard > SQL Editor for a fresh project.
 
 create table if not exists public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
   full_name text not null check (char_length(trim(full_name)) >= 2),
   email text not null,
   role text not null check (role in ('ADMIN', 'MANAGER', 'EXECUTIVE')),
-  status text not null default 'INVITED' check (status in ('INVITED', 'ACTIVE', 'INACTIVE')),
+  status text not null default 'ACTIVE' check (status in ('INVITED', 'ACTIVE', 'INACTIVE')),
+  must_change_password boolean not null default false,
+  created_by uuid references auth.users(id) on delete set null,
   invited_by uuid references auth.users(id) on delete set null,
   invited_at timestamptz,
   activated_at timestamptz,
@@ -16,6 +18,9 @@ create table if not exists public.profiles (
 
 create unique index if not exists profiles_email_lower_unique
   on public.profiles (lower(email));
+
+create index if not exists profiles_created_by_idx
+  on public.profiles (created_by);
 
 create or replace function public.set_profiles_updated_at()
 returns trigger
