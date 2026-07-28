@@ -47,3 +47,4 @@ Read these files in order:
 1. `SUPABASE_SETUP.md`
 2. `DEPLOYMENT_STEPS.md`
 3. `VALIDATION_REPORT.md`
+"# wada-factory-erp-secure" 
