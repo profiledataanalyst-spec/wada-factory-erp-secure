@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 460 96" role="img" aria-labelledby="title desc">
+  <title id="title">Profile Solution</title>
+  <desc id="desc">Profile Solution data center infrastructure experts brand mark</desc>
+  <defs>
+    <linearGradient id="brandGreen" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8BC53F"/>
+      <stop offset="1" stop-color="#65A927"/>
+    </linearGradient>
+  </defs>
+  <circle cx="48" cy="48" r="42" fill="url(#brandGreen)"/>
+  <g fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M48 18v60M33 23v14l8 7v13l-8 7v9M63 23v14l-8 7v13l8 7v9M22 48h16M58 48h16M27 32h8M61 32h8M27 64h8M61 64h8"/>
+    <circle cx="48" cy="18" r="3.3" fill="#fff"/>
+    <circle cx="48" cy="78" r="3.3" fill="#fff"/>
+    <circle cx="22" cy="48" r="3.3" fill="#fff"/>
+    <circle cx="74" cy="48" r="3.3" fill="#fff"/>
+    <circle cx="27" cy="32" r="3" fill="#fff"/>
+    <circle cx="69" cy="32" r="3" fill="#fff"/>
+    <circle cx="27" cy="64" r="3" fill="#fff"/>
+    <circle cx="69" cy="64" r="3" fill="#fff"/>
+    <circle cx="41" cy="44" r="3" fill="#fff"/>
+    <circle cx="55" cy="57" r="3" fill="#fff"/>
+  </g>
+  <text x="104" y="40" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="800" letter-spacing="1.1" fill="#78B936">PROFILE</text>
+  <text x="104" y="73" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="750" letter-spacing="1.1" fill="#4B4D50">SOLUTION</text>
+  <text x="106" y="89" font-family="Arial, Helvetica, sans-serif" font-size="9.8" font-weight="600" letter-spacing="1.75" fill="#6C7074">DATA CENTER INFRASTRUCTURE EXPERTS</text>
+</svg>

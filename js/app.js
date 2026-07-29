@@ -15,12 +15,73 @@
     'INDENT NO', 'INDENT ISSUE DATE', 'TENT DEL DATE', 'SHORTAGES', 'STATUS'
   ];
 
+  const BRAND = {
+    name: 'Profile Solutions',
+    erpName: 'Profile Solutions ERP',
+    tagline: 'Data Center Infrastructure Experts',
+    factory: 'Wada Manufacturing Unit',
+    logo: 'assets/profile-solutions-logo.svg',
+    mark: 'assets/favicon.svg',
+    website: 'https://www.profile-solution.com/',
+    heroImage: 'https://www.profile-solution.com/wp-content/uploads/profilell-newww-1-1.webp',
+    dataCenterImage: 'https://www.profile-solution.com/wp-content/uploads/Data-Centerrrrrrrrrrr-new-1.webp'
+  };
+
+  function svgIcon(name, className = 'app-icon') {
+    const paths = {
+      dashboard: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
+      projects: '<path d="M3 7h5l2 2h11v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M3 7V5a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2"/>',
+      production: '<path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/><circle cx="12" cy="12" r="4"/>',
+      import: '<path d="M12 3v12"/><path d="m7 8 5-5 5 5"/><path d="M5 21h14a2 2 0 0 0 2-2v-4M3 15v4a2 2 0 0 0 2 2"/>',
+      reports: '<path d="M4 19V9M10 19V5M16 19v-7M22 19V3"/><path d="M2 21h22"/>',
+      users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>',
+      audit: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+      settings: '<path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1V21h-4v-.1A1.7 1.7 0 0 0 8.5 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1-.4H3v-4h.1A1.7 1.7 0 0 0 4.6 8.5a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1V3h4v.1A1.7 1.7 0 0 0 15.5 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.1.37.3.72.6 1 .27.26.62.4 1 .4h.1v4H21a1.7 1.7 0 0 0-1.6.6Z"/>',
+      shortage: '<path d="M10.3 2.9 1.8 17a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 2.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4M12 17h.01"/>',
+      logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5M21 12H9"/>',
+      search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/>',
+      bell: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/>',
+      menu: '<path d="M4 6h16M4 12h16M4 18h16"/>',
+      theme: '<path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8Z"/>',
+      plus: '<path d="M12 5v14M5 12h14"/>',
+      edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/>',
+      view: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>',
+      delete: '<path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v6M14 11v6"/>',
+      download: '<path d="M12 3v12M7 10l5 5 5-5M5 21h14"/>',
+      upload: '<path d="M12 21V9M7 14l5-5 5 5M5 3h14"/>',
+      check: '<path d="m5 12 4 4L19 6"/>',
+      clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+      project: '<path d="M4 4h16v16H4z"/><path d="M8 8h8M8 12h8M8 16h5"/>',
+      item: '<path d="m12 2 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5M3 17l9 5 9-5"/>',
+      factory: '<path d="M3 21V9l6 3V8l6 4V5l6 4v12Z"/><path d="M7 21v-4h4v4M16 14h1M16 18h1"/>',
+      target: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/>',
+      issue: '<circle cx="12" cy="12" r="9"/><path d="M12 7v6M12 17h.01"/>',
+      ready: '<path d="M5 12h14M13 6l6 6-6 6"/>',
+      chevronLeft: '<path d="m15 18-6-6 6-6"/>',
+      chevronDown: '<path d="m6 9 6 6 6-6"/>',
+      refresh: '<path d="M20 6v5h-5"/><path d="M4 18v-5h5"/><path d="M6.1 8a7 7 0 0 1 11.5-2L20 11M4 13l2.4 5a7 7 0 0 0 11.5-2"/>',
+      lock: '<rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>',
+      mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/>',
+      user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
+      shield: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="m9 12 2 2 4-4"/>',
+      calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/>',
+      arrowRight: '<path d="M5 12h14M13 6l6 6-6 6"/>'
+    };
+    return `<svg class="${className}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${paths[name] || paths.issue}</svg>`;
+  }
+
+  function brandLogo(className = 'brand-logo') {
+    return `<img class="${className}" src="${BRAND.logo}" alt="Profile Solutions" decoding="async">`;
+  }
+
   const ICONS = {
-    dashboard: '▦', projects: '▣', production: '⚙', import: '⇧', reports: '▤',
-    users: '♙', audit: '◷', settings: '⚒', shortage: '⚠', logout: '↪',
-    search: '⌕', bell: '♢', menu: '☰', theme: '◐', plus: '+', edit: '✎',
-    view: '◉', delete: '×', download: '⇩', upload: '⇧', check: '✓', clock: '◷',
-    project: '▧', item: '◫', factory: '⌂', target: '◎', issue: '!', ready: '➜'
+    dashboard: svgIcon('dashboard'), projects: svgIcon('projects'), production: svgIcon('production'), import: svgIcon('import'), reports: svgIcon('reports'),
+    users: svgIcon('users'), audit: svgIcon('audit'), settings: svgIcon('settings'), shortage: svgIcon('shortage'), logout: svgIcon('logout'),
+    search: svgIcon('search'), bell: svgIcon('bell'), menu: svgIcon('menu'), theme: svgIcon('theme'), plus: svgIcon('plus'), edit: svgIcon('edit'),
+    view: svgIcon('view'), delete: svgIcon('delete'), download: svgIcon('download'), upload: svgIcon('upload'), check: svgIcon('check'), clock: svgIcon('clock'),
+    project: svgIcon('project'), item: svgIcon('item'), factory: svgIcon('factory'), target: svgIcon('target'), issue: svgIcon('issue'), ready: svgIcon('ready'),
+    chevronLeft: svgIcon('chevronLeft'), chevronDown: svgIcon('chevronDown'), refresh: svgIcon('refresh'), lock: svgIcon('lock'), mail: svgIcon('mail'),
+    user: svgIcon('user'), shield: svgIcon('shield'), calendar: svgIcon('calendar'), arrowRight: svgIcon('arrowRight')
   };
 
   const NAV = [
@@ -36,6 +97,8 @@
   ];
 
   let state = loadState();
+  if (state.settings.companyName === 'Factory ERP') state.settings.companyName = BRAND.erpName;
+  if (state.settings.factoryName === 'Main Manufacturing Unit') state.settings.factoryName = BRAND.factory;
   let currentRoute = 'dashboard';
   let supabaseClient = null;
   let authSession = null;
@@ -53,11 +116,12 @@
     return {
       version: 6,
       settings: {
-        companyName: 'Factory ERP',
-        factoryName: 'Main Manufacturing Unit',
+        companyName: 'Profile Solutions ERP',
+        factoryName: 'Wada Manufacturing Unit',
         theme: 'light',
         dateFormat: 'DD/MM/YYYY',
-        notifications: true
+        notifications: true,
+        sidebarCollapsed: false
       },
       users: [],
       projects: [],
@@ -210,73 +274,97 @@
   }
 
   function renderAuthLoading() {
-    document.getElementById('app').innerHTML = `<div class="auth-shell"><section class="auth-visual"><div class="brand-lockup"><div class="brand-mark">ERP</div><div><h1>${esc(state.settings.companyName)}</h1><p>Manufacturing Operations Platform</p></div></div><div class="auth-hero"><h2>Secure authentication is loading.</h2><p>Connecting to Supabase Authentication and checking the ERP configuration.</p></div></section><section class="auth-panel"><div class="auth-card"><div class="empty-state"><div class="empty-icon">◷</div><h3>Please wait</h3><p>Loading secure sign-in…</p></div></div></section></div>`;
+    document.getElementById('app').innerHTML = `
+      <div class="loading-screen" role="status" aria-live="polite">
+        <div class="loading-glow loading-glow-one"></div><div class="loading-glow loading-glow-two"></div>
+        <div class="loading-card">
+          ${brandLogo('loading-logo')}
+          <div class="loading-orbit"><span></span><span></span><span></span></div>
+          <h1>Profile Solutions ERP</h1>
+          <p>Preparing your secure manufacturing workspace…</p>
+          <div class="loading-progress"><span></span></div>
+        </div>
+      </div>`;
   }
 
   function renderAuth() {
     document.getElementById('app').innerHTML = `
       <div class="auth-shell">
-        <section class="auth-visual">
-          <div class="brand-lockup"><div class="brand-mark">ERP</div><div><h1>${esc(state.settings.companyName)}</h1><p>Manufacturing Operations Platform</p></div></div>
+        <section class="auth-visual" aria-label="Profile Solutions manufacturing platform">
+          <div class="auth-photo-layer" aria-hidden="true"></div>
+          <div class="auth-overlay" aria-hidden="true"></div>
+          <div class="auth-brand-row">
+            <div class="auth-logo-panel">${brandLogo('auth-brand-logo')}</div>
+            <span class="auth-brand-chip">Enterprise Operations</span>
+          </div>
           <div class="auth-hero">
-            <h2>Control every production stage from one place.</h2>
-            <p>Secure temporary passwords, forced first-login password changes, role-based access, projects, BOM items, shortages, reports and production tracking.</p>
+            <span class="eyebrow"><i></i> Wada Factory ERP</span>
+            <h2>Engineering precision.<br><em>Operational clarity.</em></h2>
+            <p>A unified workspace for projects, production stages, shortages, reporting and secure role-based operations.</p>
             <div class="auth-stats">
-              <div class="auth-stat"><strong>9</strong><span>Production stages</span></div>
-              <div class="auth-stat"><strong>3</strong><span>Role levels</span></div>
-              <div class="auth-stat"><strong>1×</strong><span>Temporary password</span></div>
+              <div class="auth-stat"><span class="auth-stat-icon">${ICONS.production}</span><strong>9</strong><span>Production stages</span></div>
+              <div class="auth-stat"><span class="auth-stat-icon">${ICONS.shield}</span><strong>3</strong><span>Controlled role levels</span></div>
+              <div class="auth-stat"><span class="auth-stat-icon">${ICONS.factory}</span><strong>1</strong><span>Connected workspace</span></div>
             </div>
           </div>
-          <div class="auth-foot">Supabase Auth + Netlify Functions • SMTP and invitation emails are not required</div>
+          <div class="auth-foot"><span>Profile Data Center Solutions Pvt. Ltd.</span><span>Data Center Infrastructure Experts</span></div>
         </section>
-        <section class="auth-panel"><div class="auth-card">
-          ${authMessage ? `<div class="info-banner ${authMessage.startsWith('ERROR:') ? 'danger' : ''}"><div>${authMessage.startsWith('ERROR:') ? '!' : '✓'}</div><div><p>${esc(authMessage.replace(/^ERROR:\s*/,''))}</p></div></div>` : ''}
-          ${setupRequired ? setupForm() : loginForm()}
-        </div></section>
+        <section class="auth-panel">
+          <div class="auth-panel-inner">
+            <div class="auth-mobile-brand">${brandLogo('auth-mobile-logo')}</div>
+            <div class="auth-card">
+              ${authMessage ? `<div class="info-banner ${authMessage.startsWith('ERROR:') ? 'danger' : ''}"><div>${authMessage.startsWith('ERROR:') ? ICONS.issue : ICONS.check}</div><div><p>${esc(authMessage.replace(/^ERROR:\s*/,''))}</p></div></div>` : ''}
+              ${setupRequired ? setupForm() : loginForm()}
+            </div>
+            <p class="auth-security-note">${ICONS.lock}<span>Secured by Supabase Authentication and protected Netlify Functions</span></p>
+          </div>
+        </section>
       </div>`;
     bindAuthEvents();
   }
 
   function setupForm() {
     return `
-      <h2>Create First Super Admin</h2>
-      <p>This one-time setup creates the first secured administrator in Supabase.</p>
-      <form id="setup-form">
-        <div class="form-group"><label>Full name</label><input name="name" required placeholder="Your full name" autocomplete="name"></div>
-        <div class="form-group"><label>Email Address</label><input name="email" type="email" required placeholder="admin@yourcompany.com" autocomplete="email"></div>
-        <div class="form-group"><label>Password</label><input name="password" type="password" required minlength="10" placeholder="Strong password" autocomplete="new-password"></div>
-        <div class="form-group"><label>Confirm password</label><input name="confirm" type="password" required minlength="10" placeholder="Repeat password" autocomplete="new-password"></div>
+      <div class="auth-card-heading"><span class="auth-card-icon">${ICONS.shield}</span><div><span class="eyebrow dark">Secure workspace setup</span><h2>Create First Super Admin</h2><p>This one-time setup creates the first secured administrator in Supabase.</p></div></div>
+      <form id="setup-form" class="auth-form">
+        <div class="form-group"><label for="setup-name">Full name</label><div class="input-shell"><span>${ICONS.user}</span><input id="setup-name" name="name" required placeholder="Your full name" autocomplete="name"></div></div>
+        <div class="form-group"><label for="setup-email">Email Address</label><div class="input-shell"><span>${ICONS.mail}</span><input id="setup-email" name="email" type="email" required placeholder="admin@profile-solution.com" autocomplete="email"></div></div>
+        <div class="form-group"><label for="setup-password">Password</label><div class="input-shell"><span>${ICONS.lock}</span><input id="setup-password" name="password" type="password" required minlength="10" placeholder="Strong password" autocomplete="new-password"></div></div>
+        <div class="form-group"><label for="setup-confirm">Confirm password</label><div class="input-shell"><span>${ICONS.lock}</span><input id="setup-confirm" name="confirm" type="password" required minlength="10" placeholder="Repeat password" autocomplete="new-password"></div></div>
         <div class="password-rules">Use at least 10 characters with uppercase, lowercase, number and special character.</div>
-        <button class="btn btn-primary btn-lg w-100" type="submit">Create Super Admin</button>
+        <button class="btn btn-primary btn-lg w-100 auth-submit" type="submit"><span>Create Super Admin</span>${ICONS.arrowRight}</button>
       </form>`;
   }
 
   function loginForm() {
     return `
-      <h2>Welcome back</h2>
-      <p>Sign in using your email address and password. New users must use the temporary password supplied by their administrator.</p>
-      <form id="login-form">
-        <div class="form-group"><label>Email Address</label><input name="email" type="email" required placeholder="name@company.com" autocomplete="username"></div>
-        <div class="form-group"><label>Password</label><input name="password" type="password" required placeholder="Enter password" autocomplete="current-password"></div>
-        <div class="auth-note">Forgot your password? Contact your Super Admin or Manager for a temporary password reset.</div>
-        <button class="btn btn-primary btn-lg w-100" type="submit">Sign in</button>
+      <div class="auth-card-heading"><span class="auth-card-icon">${ICONS.lock}</span><div><span class="eyebrow dark">Welcome to Profile Solutions</span><h2>Sign in to your ERP</h2><p>Use your company email and password to continue.</p></div></div>
+      <form id="login-form" class="auth-form">
+        <div class="form-group"><label for="login-email">Email Address</label><div class="input-shell"><span>${ICONS.mail}</span><input id="login-email" name="email" type="email" required placeholder="name@profile-solution.com" autocomplete="username"></div></div>
+        <div class="form-group"><div class="label-row"><label for="login-password">Password</label><button type="button" class="auth-link" id="forgot-password-help">Forgot Password?</button></div><div class="input-shell"><span>${ICONS.lock}</span><input id="login-password" name="password" type="password" required placeholder="Enter your password" autocomplete="current-password"></div></div>
+        <button class="btn btn-primary btn-lg w-100 auth-submit" type="submit"><span>Sign In</span>${ICONS.arrowRight}</button>
+        <div class="auth-note">New users should sign in with the temporary password supplied by their Super Admin or Manager.</div>
       </form>`;
   }
 
   function renderSetPassword() {
     document.getElementById('app').innerHTML = `
       <div class="auth-shell">
-        <section class="auth-visual"><div class="brand-lockup"><div class="brand-mark">ERP</div><div><h1>${esc(state.settings.companyName)}</h1><p>Required Password Change</p></div></div><div class="auth-hero"><h2>Create your private password.</h2><p>Your administrator supplied a temporary password. Replace it now before accessing the ERP.</p></div><div class="auth-foot">The new password is securely hashed and stored by Supabase Auth.</div></section>
-        <section class="auth-panel"><div class="auth-card">
-          <h2>Change Temporary Password</h2>
-          <p>${esc(authSession?.user?.email || '')}</p>
-          <form id="set-password-form">
-            <div class="form-group"><label>New Password</label><input name="password" type="password" required minlength="10" autocomplete="new-password"></div>
-            <div class="form-group"><label>Confirm Password</label><input name="confirm" type="password" required minlength="10" autocomplete="new-password"></div>
+        <section class="auth-visual password-visual">
+          <div class="auth-photo-layer" aria-hidden="true"></div><div class="auth-overlay" aria-hidden="true"></div>
+          <div class="auth-brand-row"><div class="auth-logo-panel">${brandLogo('auth-brand-logo')}</div><span class="auth-brand-chip">Secure Password Setup</span></div>
+          <div class="auth-hero"><span class="eyebrow"><i></i> First login security</span><h2>Create your private<br><em>ERP password.</em></h2><p>Your temporary password has completed its purpose. Replace it now before accessing operational data.</p></div>
+          <div class="auth-foot"><span>Profile Data Center Solutions Pvt. Ltd.</span><span>Secure • Controlled • Traceable</span></div>
+        </section>
+        <section class="auth-panel"><div class="auth-panel-inner"><div class="auth-mobile-brand">${brandLogo('auth-mobile-logo')}</div><div class="auth-card">
+          <div class="auth-card-heading"><span class="auth-card-icon">${ICONS.shield}</span><div><span class="eyebrow dark">Required security step</span><h2>Change Temporary Password</h2><p>${esc(authSession?.user?.email || '')}</p></div></div>
+          <form id="set-password-form" class="auth-form">
+            <div class="form-group"><label for="new-password">New Password</label><div class="input-shell"><span>${ICONS.lock}</span><input id="new-password" name="password" type="password" required minlength="10" autocomplete="new-password" placeholder="Create a strong password"></div></div>
+            <div class="form-group"><label for="confirm-password">Confirm Password</label><div class="input-shell"><span>${ICONS.lock}</span><input id="confirm-password" name="confirm" type="password" required minlength="10" autocomplete="new-password" placeholder="Repeat your new password"></div></div>
             <div class="password-rules">Minimum 10 characters, including uppercase, lowercase, number and special character.</div>
-            <button class="btn btn-primary btn-lg w-100" type="submit">Save New Password</button>
+            <button class="btn btn-primary btn-lg w-100 auth-submit" type="submit"><span>Save New Password</span>${ICONS.arrowRight}</button>
           </form>
-        </div></section>
+        </div><p class="auth-security-note">${ICONS.lock}<span>Your password is securely hashed by Supabase Authentication</span></p></div></section>
       </div>`;
     document.getElementById('set-password-form').addEventListener('submit', completePasswordFlow);
   }
@@ -331,9 +419,14 @@
       } finally { setFormBusy(login, false); }
     });
 
+    document.getElementById('forgot-password-help')?.addEventListener('click', () => {
+      toast('Password assistance', 'Contact your Super Admin or Manager to receive a new temporary password.', 'warning');
+    });
   }
 
   function setFormBusy(form, busy) {
+    form?.classList.toggle('is-busy', busy);
+    form?.setAttribute('aria-busy', String(Boolean(busy)));
     form?.querySelectorAll('button,input,select').forEach(el => { el.disabled = busy; });
   }
 
@@ -429,24 +522,46 @@
     const allowed = NAV.filter(n => n.roles.includes(user.role));
     const groups = [...new Set(allowed.map(n => n.section))];
     const unread = state.notifications.filter(n => n.userId === user.id && !n.read).length;
+    const collapsed = Boolean(state.settings.sidebarCollapsed);
     document.getElementById('app').innerHTML = `
-      <div class="app-shell">
-        <aside class="sidebar" id="sidebar">
-          <div class="brand-area"><div class="brand-mark">ERP</div><div class="brand-copy"><strong>${esc(state.settings.companyName)}</strong><small>${esc(state.settings.factoryName)}</small></div></div>
-          <div class="nav-scroll">
-            ${groups.map(g => `<div class="nav-section-title">${esc(g)}</div>${allowed.filter(n=>n.section===g).map(n=>`<button class="nav-item ${currentRoute===n.id?'active':''}" data-route="${n.id}"><span class="nav-icon">${n.icon}</span><span class="nav-label">${esc(n.label)}</span></button>`).join('')}`).join('')}
+      <div class="app-shell ${collapsed ? 'sidebar-collapsed' : ''}">
+        <aside class="sidebar" id="sidebar" aria-label="ERP navigation">
+          <div class="brand-area">
+            <div class="sidebar-logo-full">${brandLogo('sidebar-logo')}</div>
+            <img class="sidebar-logo-mark" src="${BRAND.mark}" alt="Profile Solutions">
+            <button class="sidebar-collapse-btn" data-action="collapse-sidebar" title="${collapsed ? 'Expand sidebar' : 'Collapse sidebar'}" aria-label="${collapsed ? 'Expand sidebar' : 'Collapse sidebar'}">${ICONS.chevronLeft}</button>
           </div>
+          <div class="factory-chip"><span>${ICONS.factory}</span><div><strong>${esc(state.settings.factoryName)}</strong><small>Manufacturing Operations</small></div></div>
+          <nav class="nav-scroll">
+            ${groups.map(g => `<div class="nav-section-title">${esc(g)}</div>${allowed.filter(n=>n.section===g).map(n=>`<button class="nav-item ${currentRoute===n.id?'active':''}" data-route="${n.id}" title="${esc(n.label)}"><span class="nav-icon">${n.icon}</span><span class="nav-label">${esc(n.label)}</span><span class="nav-active-marker"></span></button>`).join('')}`).join('')}
+          </nav>
           <div class="sidebar-bottom">
-            <div class="user-mini"><div class="avatar">${initials(user.name)}</div><div class="user-info"><strong>${esc(user.name)}</strong><span>${esc(roleLabel(user.role))}</span></div><button class="btn btn-ghost" data-action="logout" title="Logout">${ICONS.logout}</button></div>
+            <div class="user-mini"><div class="avatar">${initials(user.name)}</div><div class="user-info"><strong>${esc(user.name)}</strong><span>${esc(roleLabel(user.role))}</span></div><button class="sidebar-logout" data-action="logout" title="Logout" aria-label="Logout">${ICONS.logout}</button></div>
           </div>
         </aside>
         <header class="topbar">
-          <div class="topbar-left"><button class="icon-btn mobile-menu-btn" data-action="toggle-sidebar">${ICONS.menu}</button><div class="page-heading"><h1 id="top-page-title">Factory Overview</h1><small id="top-page-subtitle">Live operations summary</small></div></div>
-          <div class="topbar-search"><span class="search-icon">${ICONS.search}</span><input id="global-search" placeholder="Search project, job, BOM or item..." autocomplete="off"><div id="global-results"></div></div>
-          <div class="topbar-actions"><button class="icon-btn" data-action="theme" title="Toggle theme">${ICONS.theme}</button><button class="icon-btn" data-action="notifications" title="Notifications">${ICONS.bell}${unread ? `<span class="badge-dot">${unread>9?'9+':unread}</span>`:''}</button></div>
+          <div class="topbar-left">
+            <button class="icon-btn mobile-menu-btn" data-action="toggle-sidebar" aria-label="Open navigation">${ICONS.menu}</button>
+            <div class="topbar-brand"><img src="${BRAND.mark}" alt="Profile Solutions"><span>Profile Solutions</span></div>
+            <span class="topbar-divider"></span>
+            <div class="page-heading"><h1 id="top-page-title">Factory Overview</h1><small id="top-page-subtitle">Live operations summary</small></div>
+          </div>
+          <div class="topbar-search"><span class="search-icon">${ICONS.search}</span><input id="global-search" aria-label="Global ERP search" placeholder="Search project, job, BOM or item..." autocomplete="off"><kbd>Ctrl K</kbd><div id="global-results"></div></div>
+          <div class="topbar-actions">
+            <button class="icon-btn" data-action="theme" title="Toggle theme" aria-label="Toggle theme">${ICONS.theme}</button>
+            <button class="icon-btn" data-action="notifications" title="Notifications" aria-label="Notifications">${ICONS.bell}${unread ? `<span class="badge-dot">${unread>9?'9+':unread}</span>`:''}</button>
+            <div class="profile-control">
+              <button class="profile-trigger" data-action="profile-menu" aria-haspopup="menu" aria-expanded="false"><div class="avatar">${initials(user.name)}</div><div class="profile-trigger-copy"><strong>${esc(user.name)}</strong><span>${esc(roleLabel(user.role))}</span></div>${ICONS.chevronDown}</button>
+              <div class="profile-menu" id="profile-menu" role="menu">
+                <div class="profile-menu-head"><div class="avatar large">${initials(user.name)}</div><div><strong>${esc(user.name)}</strong><span>${esc(user.email || '')}</span><small>${esc(roleLabel(user.role))}</small></div></div>
+                <button role="menuitem" data-action="logout">${ICONS.logout}<span>Sign out</span></button>
+              </div>
+            </div>
+          </div>
         </header>
         <main class="main-content"><div class="content-wrap" id="page-content"></div></main>
-        <aside class="notification-panel" id="notification-panel"><div class="panel-head"><strong>Notifications</strong><div><button class="btn btn-ghost btn-sm" data-action="mark-all-read">Mark all read</button><button class="close-btn" data-action="notifications">×</button></div></div><div class="panel-body" id="notification-list"></div></aside>
+        <aside class="notification-panel" id="notification-panel"><div class="panel-head"><div><span class="eyebrow dark">Activity centre</span><strong>Notifications</strong></div><div><button class="btn btn-ghost btn-sm" data-action="mark-all-read">Mark all read</button><button class="close-btn" data-action="notifications" aria-label="Close notifications">×</button></div></div><div class="panel-body" id="notification-list"></div></aside>
+        <div class="mobile-nav-backdrop" data-action="toggle-sidebar"></div>
       </div>`;
     bindShellEvents();
     renderPage(currentRoute);
@@ -463,6 +578,10 @@
     document.addEventListener('click', globalClickHandler, { once: true });
     document.querySelectorAll('[data-action="logout"]').forEach(btn => btn.addEventListener('click', logout));
     document.querySelectorAll('[data-action="toggle-sidebar"]').forEach(btn => btn.addEventListener('click', () => document.getElementById('sidebar').classList.toggle('open')));
+    document.querySelectorAll('[data-action="collapse-sidebar"]').forEach(btn => btn.addEventListener('click', toggleSidebarCollapse));
+    document.querySelectorAll('[data-action="profile-menu"]').forEach(btn => btn.addEventListener('click', () => {
+      const menu = document.getElementById('profile-menu'); const open = menu?.classList.toggle('open'); btn.setAttribute('aria-expanded', String(Boolean(open)));
+    }));
     document.querySelectorAll('[data-action="theme"]').forEach(btn => btn.addEventListener('click', toggleTheme));
     document.querySelectorAll('[data-action="notifications"]').forEach(btn => btn.addEventListener('click', () => document.getElementById('notification-panel').classList.toggle('open')));
     document.querySelectorAll('[data-action="mark-all-read"]').forEach(btn => btn.addEventListener('click', markAllRead));
@@ -474,11 +593,21 @@
       });
       search.addEventListener('keydown', e => { if (e.key === 'Escape') document.getElementById('global-results').innerHTML = ''; });
     }
+    window.onkeydown = e => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        document.getElementById('global-search')?.focus();
+      }
+    };
   }
 
   function globalClickHandler(e) {
     if (!e.target.closest('.topbar-search')) {
       const r = document.getElementById('global-results'); if (r) r.innerHTML = '';
+    }
+    if (!e.target.closest('.profile-control')) {
+      document.getElementById('profile-menu')?.classList.remove('open');
+      document.querySelector('[data-action="profile-menu"]')?.setAttribute('aria-expanded','false');
     }
     document.addEventListener('click', globalClickHandler, { once: true });
   }
@@ -488,6 +617,10 @@
     saveState();
     await supabaseClient?.auth.signOut();
     authSession = null; currentProfile = null; currentRoute = 'dashboard'; authView = 'login'; render();
+  }
+  function toggleSidebarCollapse() {
+    state.settings.sidebarCollapsed = !state.settings.sidebarCollapsed;
+    saveState(); renderAppShell();
   }
   function toggleTheme() {
     state.settings.theme = state.settings.theme === 'dark' ? 'light' : 'dark'; saveState(); renderAppShell();
@@ -542,7 +675,7 @@
   }
 
   function pageToolbar(title, subtitle, actions = '') {
-    return `<div class="page-toolbar"><div><h2>${esc(title)}</h2><p>${esc(subtitle)}</p></div><div class="toolbar-actions">${actions}</div></div>`;
+    return `<div class="page-toolbar"><div class="page-toolbar-copy"><span class="eyebrow dark"><i></i> Profile Solutions ERP</span><h2>${esc(title)}</h2><p>${esc(subtitle)}</p></div><div class="toolbar-actions">${actions}</div></div>`;
   }
   function emptyState(icon, title, text, action='') {
     return `<div class="empty-state"><div class="empty-icon">${icon}</div><h3>${esc(title)}</h3><p>${esc(text)}</p>${action}</div>`;
@@ -562,13 +695,18 @@
     const shortages = state.shortages.filter(s => s.status !== 'Resolved' && projects.some(p=>p.id===s.projectId)).length;
     const page = document.getElementById('page-content');
     page.innerHTML = `
-      ${pageToolbar('Factory Overview Dashboard','Monitor production, delivery risk and workflow progress.', `<button class="btn btn-secondary" id="refresh-dashboard">↻ Refresh</button>${can('ADMIN','MANAGER')?'<button class="btn btn-primary" data-go="import">⇧ Import Excel</button>':''}`)}
-      <div class="grid grid-5">
-        ${kpi('▣','Total Projects',projects.length,'All visible projects')}
-        ${kpi('●','Active Projects',active,`${completed} completed`)}
-        ${kpi('⚠','Delayed Projects',delayed,'Requires attention')}
-        ${kpi('∑','Total Quantity',fmtNumber(qty),`${fmtNumber(pending)} pending`)}
-        ${kpi('➜','Ready for Dispatch',fmtNumber(ready),`${shortages} open shortages`)}
+      ${pageToolbar('Factory Overview Dashboard','Monitor production, delivery risk and workflow progress.', `<button class="btn btn-secondary" id="refresh-dashboard">${ICONS.refresh}<span>Refresh</span></button>${can('ADMIN','MANAGER')?`<button class="btn btn-primary" data-go="import">${ICONS.upload}<span>Import Excel</span></button>`:''}`)}
+      <section class="dashboard-hero">
+        <div class="dashboard-hero-media" aria-hidden="true"></div><div class="dashboard-hero-overlay" aria-hidden="true"></div>
+        <div class="dashboard-hero-content"><span class="eyebrow"><i></i> ${esc(roleLabel(getCurrentUser()?.role || ''))} workspace</span><h3>Welcome back, ${esc((getCurrentUser()?.name || 'Team').split(' ')[0])}.</h3><p>Keep Profile Solutions projects moving with a live view of production flow, delivery risk and operational priorities.</p><div class="hero-meta"><span>${ICONS.calendar}${fmtDate(todayISO())}</span><span>${ICONS.factory}${esc(state.settings.factoryName)}</span></div></div>
+        <div class="dashboard-hero-score"><span>Production readiness</span><strong>${qty ? Math.round((ready / qty) * 100) : 0}%</strong><small>${fmtNumber(ready)} of ${fmtNumber(qty)} ready</small></div>
+      </section>
+      <div class="grid grid-5 kpi-grid">
+        ${kpi(ICONS.projects,'Total Projects',projects.length,'All visible projects')}
+        ${kpi(ICONS.check,'Active Projects',active,`${completed} completed`)}
+        ${kpi(ICONS.shortage,'Delayed Projects',delayed,'Requires attention')}
+        ${kpi(ICONS.item,'Total Quantity',fmtNumber(qty),`${fmtNumber(pending)} pending`)}
+        ${kpi(ICONS.ready,'Ready for Dispatch',fmtNumber(ready),`${shortages} open shortages`)}
       </div>
       <div class="grid grid-2" style="margin-top:18px">
         <section class="card"><div class="card-header"><div><h3>Stage-wise Production</h3><p>Items currently positioned at each workflow stage</p></div></div><div class="card-body"><div class="chart-box"><canvas id="stage-chart"></canvas></div></div></section>
@@ -589,11 +727,11 @@
   function shortStage(stage) { return stage.replace('READY FOR DISPATCH','DISPATCH').replace('POWDER COATING','P.COATING').replace('MRN - STORES','MRN').replace('PRE-COATING','PRE COAT'); }
   function renderRecentActivity() {
     const logs = state.audit.filter(a=>['Production','Projects','Import','Shortages'].includes(a.module)).slice(0,8);
-    return logs.length ? `<div class="activity-list">${logs.map(a=>`<div class="activity-item"><div class="activity-icon">${a.module==='Production'?'⚙':a.module==='Import'?'⇧':a.module==='Shortages'?'⚠':'▣'}</div><div class="activity-main"><strong>${esc(a.action)} • ${esc(a.module)}</strong><span>${esc(a.details)} by ${esc(a.userName)}</span></div><div class="activity-time">${fmtDate(a.createdAt,true)}</div></div>`).join('')}</div>` : emptyState('◷','No recent activity','Activity will appear after records are created or updated.');
+    return logs.length ? `<div class="activity-list">${logs.map(a=>`<div class="activity-item"><div class="activity-icon">${a.module==='Production'?ICONS.production:a.module==='Import'?ICONS.upload:a.module==='Shortages'?ICONS.shortage:ICONS.projects}</div><div class="activity-main"><strong>${esc(a.action)} • ${esc(a.module)}</strong><span>${esc(a.details)} by ${esc(a.userName)}</span></div><div class="activity-time">${fmtDate(a.createdAt,true)}</div></div>`).join('')}</div>` : emptyState(ICONS.clock,'No recent activity','Activity will appear after records are created or updated.');
   }
   function renderUpcomingDeliveries(projects) {
     const list = projects.filter(p=>p.targetDate && projectCompletion(p.id)<100).sort((a,b)=>new Date(a.targetDate)-new Date(b.targetDate)).slice(0,6);
-    return list.length ? `<div class="activity-list">${list.map(p=>{const days=Math.ceil((new Date(p.targetDate)-new Date())/86400000); return `<div class="activity-item"><div class="activity-icon">◎</div><div class="activity-main"><strong>${esc(p.name)}</strong><span>${projectCompletion(p.id)}% complete • ${days<0?Math.abs(days)+' days overdue':days+' days remaining'}</span></div><div class="activity-time">${fmtDate(p.targetDate)}</div></div>`}).join('')}</div>` : emptyState('◎','No upcoming deliveries','Add project target dates to monitor delivery schedules.');
+    return list.length ? `<div class="activity-list">${list.map(p=>{const days=Math.ceil((new Date(p.targetDate)-new Date())/86400000); return `<div class="activity-item"><div class="activity-icon">${ICONS.target}</div><div class="activity-main"><strong>${esc(p.name)}</strong><span>${projectCompletion(p.id)}% complete • ${days<0?Math.abs(days)+' days overdue':days+' days remaining'}</span></div><div class="activity-time">${fmtDate(p.targetDate)}</div></div>`}).join('')}</div>` : emptyState(ICONS.target,'No upcoming deliveries','Add project target dates to monitor delivery schedules.');
   }
 
   function drawBarChart(canvasId, data, options={}) {
@@ -603,12 +741,12 @@
     const ctx = canvas.getContext('2d'); ctx.scale(dpr,dpr);
     const w=canvas.width/dpr,h=canvas.height/dpr, pad={l:42,r:15,t:20,b:62};
     ctx.clearRect(0,0,w,h);
-    const style=getComputedStyle(document.documentElement), line=style.getPropertyValue('--line').trim(), text=style.getPropertyValue('--muted').trim(), primary=style.getPropertyValue('--primary').trim();
+    const style=getComputedStyle(document.documentElement), line=style.getPropertyValue('--line').trim(), text=style.getPropertyValue('--muted').trim(), primary=style.getPropertyValue('--primary').trim(), primaryStrong=style.getPropertyValue('--primary-strong').trim() || primary;
     const max = options.max || Math.max(1,...data.map(d=>d.value))*1.18;
     ctx.strokeStyle=line;ctx.fillStyle=text;ctx.font='10px system-ui';ctx.textAlign='right';
     for(let i=0;i<=4;i++){const y=pad.t+(h-pad.t-pad.b)*(i/4);ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(w-pad.r,y);ctx.stroke();const v=Math.round(max*(1-i/4));ctx.fillText(v+(options.suffix||''),pad.l-7,y+3);}
     const chartW=w-pad.l-pad.r, gap=8, bw=Math.max(8,(chartW/data.length)-gap);
-    data.forEach((d,i)=>{const x=pad.l+i*(chartW/data.length)+gap/2;const bh=(h-pad.t-pad.b)*(d.value/max);const y=h-pad.b-bh;ctx.fillStyle=primary;roundRect(ctx,x,y,bw,bh,5);ctx.fill();ctx.fillStyle=text;ctx.textAlign='center';ctx.save();ctx.translate(x+bw/2,h-pad.b+10);ctx.rotate(-0.45);ctx.fillText(d.label,0,0);ctx.restore();ctx.fillStyle=style.getPropertyValue('--text').trim();ctx.font='bold 10px system-ui';ctx.fillText(d.value+(options.suffix||''),x+bw/2,y-6);});
+    data.forEach((d,i)=>{const x=pad.l+i*(chartW/data.length)+gap/2;const bh=(h-pad.t-pad.b)*(d.value/max);const y=h-pad.b-bh;const gradient=ctx.createLinearGradient(0,y,0,h-pad.b);gradient.addColorStop(0,primary);gradient.addColorStop(1,primaryStrong);ctx.fillStyle=gradient;ctx.shadowColor='rgba(104,168,40,.18)';ctx.shadowBlur=10;roundRect(ctx,x,y,bw,bh,7);ctx.fill();ctx.shadowBlur=0;ctx.fillStyle=text;ctx.textAlign='center';ctx.save();ctx.translate(x+bw/2,h-pad.b+10);ctx.rotate(-0.45);ctx.fillText(d.label,0,0);ctx.restore();ctx.fillStyle=style.getPropertyValue('--text').trim();ctx.font='bold 10px system-ui';ctx.fillText(d.value+(options.suffix||''),x+bw/2,y-6);});
   }
   function roundRect(ctx,x,y,w,h,r){r=Math.min(r,w/2,h/2);ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
 
@@ -961,8 +1099,8 @@
       <div class="info-banner"><div>🔐</div><div><strong>Authentication is secured by Supabase</strong><p>Passwords are securely hashed by Supabase Auth. Super Admins and authorised Managers create temporary passwords, and users must change them at first login. Operational records continue to use the existing browser-storage workflow.</p></div></div>
       <div class="grid grid-2"><section class="card"><div class="card-header"><div><h3>Company Configuration</h3><p>Branding and display preferences</p></div></div><div class="card-body"><form id="settings-form"><div class="form-group"><label>Company / ERP Name</label><input name="companyName" value="${esc(state.settings.companyName)}"></div><div class="form-group"><label>Factory Name</label><input name="factoryName" value="${esc(state.settings.factoryName)}"></div><div class="setting-row"><div class="setting-copy"><strong>Dark Mode</strong><span>Use dark industrial interface</span></div><button type="button" class="toggle ${state.settings.theme==='dark'?'on':''}" id="settings-theme"></button></div><button class="btn btn-primary" type="submit" style="margin-top:16px">Save Settings</button></form></div></section>
       <section class="card"><div class="card-header"><div><h3>Backup & Restore</h3><p>Protect browser-stored ERP records</p></div></div><div class="card-body"><div class="setting-row"><div class="setting-copy"><strong>Download Full Backup</strong><span>Projects, production history, shortages and settings</span></div><button class="btn btn-secondary" id="download-backup">⇩ Backup</button></div><div class="setting-row"><div class="setting-copy"><strong>Restore Backup</strong><span>Replace current browser data from a JSON file</span></div><button class="btn btn-secondary" id="restore-backup">⇧ Restore</button></div><div class="setting-row"><div class="setting-copy"><strong class="text-danger">Reset All Data</strong><span>Delete all ERP records from this browser</span></div><button class="btn btn-danger" id="reset-data">Reset</button></div></div></section></div>
-      <section class="card" style="margin-top:18px"><div class="card-header"><div><h3>System Information</h3><p>Deployment characteristics</p></div></div><div class="card-body"><div class="grid grid-4">${miniMetric('Technology','HTML / CSS / JS')}${miniMetric('Authentication','Supabase Auth')}${miniMetric('Deployment','Netlify Functions')}${miniMetric('Version','7.0 Temporary Passwords')}</div></div></section>`;
-    document.getElementById('settings-form').onsubmit=e=>{e.preventDefault();const fd=new FormData(e.target);state.settings.companyName=String(fd.get('companyName')||'Factory ERP');state.settings.factoryName=String(fd.get('factoryName')||'Main Manufacturing Unit');audit('UPDATE','Settings','Updated company configuration');saveState();renderAppShell();toast('Settings saved');};document.getElementById('settings-theme').onclick=toggleTheme;document.getElementById('download-backup').onclick=()=>downloadBlob(JSON.stringify(state,null,2),`factory-erp-backup-${todayISO()}.json`,'application/json');document.getElementById('restore-backup').onclick=()=>document.getElementById('backup-file-input').click();const backupInput=document.getElementById('backup-file-input');backupInput.value='';backupInput.onchange=async()=>{try{const data=JSON.parse(await backupInput.files[0].text());if(!data.projects||!data.items)throw new Error('Invalid backup format');if(!confirm('Restore this backup and replace current browser data?'))return;state={...defaultState(),...data,users:state.users};saveState();render();toast('Backup restored','Operational data was restored. Supabase users were not changed.');}catch(e){toast('Restore failed',e.message,'error');}};document.getElementById('reset-data').onclick=()=>{if(!confirm('This permanently deletes all local ERP data. Continue?'))return;if(!confirm('Final confirmation: delete everything?'))return;localStorage.removeItem(STORAGE_KEY);state={...defaultState(),users:state.users};saveState();render();};
+      <section class="card" style="margin-top:18px"><div class="card-header"><div><h3>System Information</h3><p>Deployment characteristics</p></div></div><div class="card-body"><div class="grid grid-4">${miniMetric('Technology','HTML / CSS / JS')}${miniMetric('Authentication','Supabase Auth')}${miniMetric('Deployment','Netlify Functions')}${miniMetric('Version','8.0 Profile Solutions UI')}</div></div></section>`;
+    document.getElementById('settings-form').onsubmit=e=>{e.preventDefault();const fd=new FormData(e.target);state.settings.companyName=String(fd.get('companyName')||BRAND.erpName);state.settings.factoryName=String(fd.get('factoryName')||BRAND.factory);audit('UPDATE','Settings','Updated company configuration');saveState();renderAppShell();toast('Settings saved');};document.getElementById('settings-theme').onclick=toggleTheme;document.getElementById('download-backup').onclick=()=>downloadBlob(JSON.stringify(state,null,2),`factory-erp-backup-${todayISO()}.json`,'application/json');document.getElementById('restore-backup').onclick=()=>document.getElementById('backup-file-input').click();const backupInput=document.getElementById('backup-file-input');backupInput.value='';backupInput.onchange=async()=>{try{const data=JSON.parse(await backupInput.files[0].text());if(!data.projects||!data.items)throw new Error('Invalid backup format');if(!confirm('Restore this backup and replace current browser data?'))return;state={...defaultState(),...data,users:state.users};saveState();render();toast('Backup restored','Operational data was restored. Supabase users were not changed.');}catch(e){toast('Restore failed',e.message,'error');}};document.getElementById('reset-data').onclick=()=>{if(!confirm('This permanently deletes all local ERP data. Continue?'))return;if(!confirm('Final confirmation: delete everything?'))return;localStorage.removeItem(STORAGE_KEY);state={...defaultState(),users:state.users};saveState();render();};
   }
 
   function openModal(title, body, footer='', size='') {

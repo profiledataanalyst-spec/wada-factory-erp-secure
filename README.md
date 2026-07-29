@@ -1,50 +1,30 @@
-# Factory ERP – Secure Invitations and Authentication
+# Profile Solutions Factory ERP
 
-Version 6 adds secure Supabase authentication to the existing vanilla HTML/CSS/JavaScript ERP without redesigning its operational UI.
+Version 8 applies a complete Profile Solutions UI/UX redesign to the existing Factory ERP while preserving its authentication, permissions, business logic, workflows, data structures, imports, reports, production tracker, shortages module and Netlify/Supabase integrations.
 
-## Authentication features
+## Visual redesign
 
-- One-time first Super Admin setup
-- Super Admin-only user creation
-- Manager and Executive invitation emails
-- User-created passwords
-- Secure password hashing managed by Supabase Auth
-- Single-use invitation links
-- Configurable link expiry through Supabase Email OTP expiration
-- Forgot Password and recovery email
-- Role fetched from the protected `profiles` table
-- Inactive-account blocking
-- Super Admin user editing and deletion
-- Netlify Function enforcement for administration actions
-- No passwords stored in Local Storage
+- Profile Solutions logo and favicon throughout the application
+- Premium dark-navy and brand-green enterprise theme
+- Redesigned login, first-admin setup and forced-password-change screens
+- Collapsible navigation sidebar with consistent SVG icons
+- Modern header with search, notification panel and profile menu
+- Executive dashboard hero, KPI cards, tables, forms, modals and charts
+- Responsive layouts for desktop, laptop, tablet and mobile
+- Keyboard focus styling, accessible labels and reduced-motion support
+- Official Profile Solutions website photography used for branded hero imagery
 
-## Existing ERP features retained
+## Authentication workflow retained
 
-- Factory dashboard
-- Projects
-- Production Tracker
-- Stage updates for all roles
-- Shortages and Issues
-- Operations item creation
-- Excel template download and validation
-- Reports and filters
-- Role-based menus and operational controls
-- Browser backup and restore
+- First Super Admin setup through Supabase Auth
+- Super Admin creates Manager and Executive accounts
+- Manager creates Executive accounts only
+- Temporary passwords with forced first-login password change
+- Administrator-assisted password reset
+- Netlify Functions enforce permissions and protect the Supabase secret key
 
-## Architecture
+## Deploying the UI update
 
-- Frontend: HTML, CSS and vanilla JavaScript
-- Authentication: Supabase Auth
-- User profiles and roles: Supabase PostgreSQL
-- Secure admin API: Netlify Functions
-- Hosting: Netlify
-- Operational ERP state: existing browser Local Storage workflow
+No SQL migration, Supabase setting, environment-variable change or Netlify configuration change is required for Version 8.
 
-The authentication and user directory are shared across devices. The operational data workflow was intentionally left unchanged, so projects, production records and shortages remain stored in each browser. Migrating all operational ERP data to Supabase would be a separate database migration project.
-
-Read these files in order:
-
-1. `SUPABASE_SETUP.md`
-2. `DEPLOYMENT_STEPS.md`
-3. `VALIDATION_REPORT.md`
-"# wada-factory-erp-secure" 
+See `PROFILE_SOLUTIONS_UI_UPDATE.md` for the exact update procedure.

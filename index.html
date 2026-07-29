@@ -3,9 +3,14 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description" content="Factory ERP with Supabase temporary passwords, forced first-login password change and role-based access" />
-  <title>Factory ERP</title>
+  <meta name="description" content="Profile Solutions Factory ERP for projects, production tracking, shortages, reporting and secure role-based operations" />
+  <meta name="theme-color" content="#102b37" />
+  <title>Profile Solutions ERP</title>
   <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="dns-prefetch" href="https://www.profile-solution.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Poppins:wght@500;600;700;800&display=swap" rel="stylesheet" />
   <style>
 :root {
   --bg: #f4f7f9;
@@ -428,13 +433,523 @@ tbody tr:hover { background: color-mix(in srgb, var(--primary-soft) 35%, transpa
 /* Supabase authentication additions */
 .auth-row{display:flex;justify-content:flex-end;margin:-2px 0 14px}.auth-link{border:0;background:transparent;color:var(--primary);font:inherit;font-weight:700;cursor:pointer;padding:4px 0}.auth-link:hover{text-decoration:underline}.auth-secondary{margin-top:10px}.password-rules{font-size:12px;line-height:1.5;color:var(--text-muted);background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin:-2px 0 14px}.auth-card .info-banner{margin-bottom:18px}.auth-card button:disabled,.auth-card input:disabled,.auth-card select:disabled{opacity:.65;cursor:not-allowed}
 
+/* ========================================================================== 
+   Profile Solutions Enterprise UI — Version 8.0
+   Visual-only redesign. Operational logic, permissions and data flows remain unchanged.
+   ========================================================================== */
+:root {
+  --bg: #f4f7f3;
+  --surface: #ffffff;
+  --surface-2: #f7faf6;
+  --surface-3: #edf4e9;
+  --text: #17242c;
+  --muted: #687780;
+  --line: #dfe7dc;
+  --border: var(--line);
+  --text-muted: var(--muted);
+  --primary: #76b82a;
+  --primary-strong: #5f9e20;
+  --primary-2: #4e891a;
+  --primary-soft: #eef8e4;
+  --brand-navy: #102b37;
+  --brand-navy-2: #0a202a;
+  --brand-slate: #354b55;
+  --accent: #f0a51f;
+  --accent-soft: #fff5dd;
+  --success: #3e8f3b;
+  --success-soft: #eaf6e8;
+  --warning: #c27816;
+  --warning-soft: #fff5e5;
+  --danger: #c64a4a;
+  --danger-soft: #fff0ef;
+  --info: #2473a6;
+  --info-soft: #ebf5fb;
+  --shadow: 0 22px 60px rgba(16, 43, 55, 0.12);
+  --shadow-sm: 0 8px 26px rgba(16, 43, 55, 0.075);
+  --shadow-hover: 0 18px 42px rgba(16, 43, 55, 0.13);
+  --radius: 18px;
+  --radius-sm: 12px;
+  --sidebar: 282px;
+  --sidebar-collapsed: 86px;
+  --topbar: 78px;
+}
+
+[data-theme="dark"] {
+  --bg: #0b171d;
+  --surface: #112129;
+  --surface-2: #152933;
+  --surface-3: #1b332e;
+  --text: #eef5ef;
+  --muted: #9babb1;
+  --line: #28404a;
+  --border: var(--line);
+  --text-muted: var(--muted);
+  --primary: #8acb3d;
+  --primary-strong: #6aac28;
+  --primary-2: #a0dc57;
+  --primary-soft: #203c25;
+  --brand-navy: #07151b;
+  --brand-navy-2: #061116;
+  --brand-slate: #19313b;
+  --accent-soft: #3c2d12;
+  --success-soft: #17351e;
+  --warning-soft: #3c2d18;
+  --danger-soft: #402126;
+  --info-soft: #173044;
+  --shadow: 0 24px 64px rgba(0, 0, 0, 0.34);
+  --shadow-sm: 0 9px 30px rgba(0, 0, 0, 0.24);
+  --shadow-hover: 0 20px 46px rgba(0, 0, 0, 0.32);
+}
+
+body {
+  font-family: "Inter", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background:
+    radial-gradient(circle at 96% 2%, color-mix(in srgb, var(--primary) 7%, transparent), transparent 24rem),
+    var(--bg);
+  color: var(--text);
+  letter-spacing: -0.005em;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1, h2, h3, h4, h5, h6, .page-heading, .kpi-copy strong {
+  font-family: "Poppins", "Inter", "Segoe UI", sans-serif;
+  letter-spacing: -0.025em;
+}
+
+::selection { background: color-mix(in srgb, var(--primary) 28%, transparent); }
+:focus-visible { outline: 3px solid color-mix(in srgb, var(--primary) 40%, transparent); outline-offset: 2px; }
+.app-icon { width: 19px; height: 19px; display: block; flex: 0 0 auto; }
+.btn .app-icon { width: 17px; height: 17px; }
+
+/* Loading screen */
+.loading-screen {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  position: relative;
+  background: linear-gradient(140deg, #f8fbf6 0%, #eef5ea 55%, #e6efe1 100%);
+}
+[data-theme="dark"] .loading-screen { background: linear-gradient(140deg, #07151b, #10242b); }
+.loading-glow { position: absolute; border-radius: 50%; filter: blur(10px); opacity: .55; }
+.loading-glow-one { width: 460px; height: 460px; right: -130px; top: -160px; background: rgba(118,184,42,.2); }
+.loading-glow-two { width: 340px; height: 340px; left: -110px; bottom: -130px; background: rgba(240,165,31,.15); }
+.loading-card { width: min(440px, calc(100vw - 36px)); text-align: center; position: relative; z-index: 1; }
+.loading-logo { width: min(330px, 80vw); height: auto; margin-bottom: 34px; }
+.loading-card h1 { font-size: 24px; margin: 26px 0 8px; color: var(--brand-navy); }
+[data-theme="dark"] .loading-card h1 { color: var(--text); }
+.loading-card p { margin: 0; color: var(--muted); font-size: 13px; }
+.loading-orbit { width: 62px; height: 62px; margin: auto; border: 1px solid color-mix(in srgb, var(--primary) 25%, transparent); border-radius: 50%; position: relative; animation: orbitSpin 1.6s linear infinite; }
+.loading-orbit span { position: absolute; width: 10px; height: 10px; border-radius: 50%; background: var(--primary); box-shadow: 0 0 18px rgba(118,184,42,.42); }
+.loading-orbit span:nth-child(1) { top: -5px; left: 25px; }
+.loading-orbit span:nth-child(2) { bottom: 4px; left: 4px; transform: scale(.7); }
+.loading-orbit span:nth-child(3) { bottom: 4px; right: 4px; transform: scale(.45); }
+.loading-progress { height: 4px; width: 220px; max-width: 70%; background: color-mix(in srgb, var(--line) 85%, transparent); border-radius: 99px; overflow: hidden; margin: 24px auto 0; }
+.loading-progress span { display: block; width: 45%; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--primary), var(--accent)); animation: loadingSweep 1.45s ease-in-out infinite; }
+@keyframes orbitSpin { to { transform: rotate(360deg); } }
+@keyframes loadingSweep { 0% { transform: translateX(-120%); } 50%,100% { transform: translateX(250%); } }
+
+/* Authentication experience */
+.auth-shell {
+  grid-template-columns: minmax(0, 1.16fr) minmax(430px, .84fr);
+  min-height: 100vh;
+  background: var(--surface-2);
+}
+.auth-visual {
+  min-height: 100vh;
+  padding: clamp(34px, 4vw, 68px);
+  background: var(--brand-navy);
+  isolation: isolate;
+}
+.auth-photo-layer {
+  position: absolute;
+  inset: 0;
+  z-index: -3;
+  background-image: url("https://www.profile-solution.com/wp-content/uploads/profilell-newww-1-1.webp");
+  background-size: cover;
+  background-position: center;
+  transform: scale(1.03);
+}
+.auth-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  background:
+    linear-gradient(110deg, rgba(7,27,36,.97) 0%, rgba(12,43,53,.93) 44%, rgba(21,67,64,.70) 100%),
+    linear-gradient(0deg, rgba(0,0,0,.24), transparent 45%);
+}
+.auth-visual::before {
+  width: 580px; height: 580px; right: -250px; top: -240px;
+  border: 1px solid rgba(139,197,63,.24);
+}
+.auth-visual::after {
+  width: 390px; height: 390px; left: -180px; bottom: -170px;
+  border: 1px solid rgba(255,255,255,.1);
+}
+.auth-brand-row { display: flex; justify-content: space-between; align-items: center; gap: 18px; position: relative; z-index: 2; }
+.auth-logo-panel { width: min(330px, 44vw); background: rgba(255,255,255,.96); border: 1px solid rgba(255,255,255,.65); border-radius: 16px; padding: 10px 17px; box-shadow: 0 14px 32px rgba(0,0,0,.18); }
+.auth-brand-logo { display: block; width: 100%; height: auto; }
+.auth-brand-chip { color: rgba(255,255,255,.82); border: 1px solid rgba(255,255,255,.19); background: rgba(255,255,255,.08); padding: 9px 13px; border-radius: 999px; font-size: 10px; letter-spacing: .11em; text-transform: uppercase; backdrop-filter: blur(8px); }
+.auth-hero { max-width: 720px; margin: auto 0; padding: 70px 0; }
+.eyebrow { display: inline-flex; align-items: center; gap: 8px; color: rgba(255,255,255,.74); text-transform: uppercase; letter-spacing: .15em; font-size: 10px; font-weight: 800; }
+.eyebrow i { width: 20px; height: 2px; border-radius: 99px; background: var(--primary); box-shadow: 0 0 12px rgba(118,184,42,.5); }
+.eyebrow.dark { color: var(--primary-2); }
+.auth-hero h2 { font-size: clamp(43px, 5vw, 74px); line-height: 1.03; letter-spacing: -.055em; margin: 22px 0 22px; max-width: 780px; }
+.auth-hero h2 em { color: #9bd64e; font-style: normal; }
+.auth-hero p { max-width: 650px; font-size: clamp(15px, 1.25vw, 18px); color: rgba(255,255,255,.72); line-height: 1.75; }
+.auth-stats { grid-template-columns: repeat(3, minmax(0,1fr)); gap: 12px; margin-top: 36px; max-width: 660px; }
+.auth-stat { min-height: 124px; padding: 17px; border-radius: 16px; background: rgba(255,255,255,.085); border: 1px solid rgba(255,255,255,.13); backdrop-filter: blur(12px); transition: transform .2s ease, background .2s ease; }
+.auth-stat:hover { transform: translateY(-3px); background: rgba(255,255,255,.12); }
+.auth-stat-icon { display: grid !important; place-items: center; width: 34px; height: 34px; color: #a6dc62; margin: 0 0 12px !important; opacity: 1 !important; }
+.auth-stat-icon .app-icon { width: 23px; height: 23px; }
+.auth-stat strong { font-family: "Poppins", sans-serif; font-size: 23px; }
+.auth-stat > span:last-child { font-size: 11px; opacity: .72; line-height: 1.35; }
+.auth-foot { display: flex; align-items: center; justify-content: space-between; gap: 16px; font-size: 10px; letter-spacing: .05em; color: rgba(255,255,255,.58); opacity: 1; }
+.auth-panel { padding: clamp(22px, 4vw, 62px); background: var(--surface-2); position: relative; }
+.auth-panel::before { content: ""; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(circle at 100% 0, rgba(118,184,42,.12), transparent 32%); }
+.auth-panel-inner { position: relative; z-index: 1; width: min(510px, 100%); }
+.auth-mobile-brand { display: none; }
+.auth-card { width: 100%; padding: clamp(28px, 3vw, 42px); border-radius: 24px; border: 1px solid color-mix(in srgb, var(--line) 88%, white); box-shadow: 0 24px 70px rgba(16,43,55,.12); }
+.auth-card-heading { display: grid; grid-template-columns: 50px 1fr; gap: 14px; margin-bottom: 28px; }
+.auth-card-heading h2 { font-size: clamp(24px, 2.5vw, 31px); margin: 5px 0 5px; color: var(--text); }
+.auth-card-heading p { color: var(--muted); font-size: 12px; line-height: 1.55; margin: 0; }
+.auth-card-icon { width: 48px; height: 48px; display: grid; place-items: center; border-radius: 15px; color: var(--primary-2); background: linear-gradient(145deg, var(--primary-soft), color-mix(in srgb, var(--primary-soft) 55%, white)); border: 1px solid color-mix(in srgb, var(--primary) 20%, var(--line)); }
+.auth-card-icon .app-icon { width: 23px; height: 23px; }
+.auth-form { display: grid; gap: 2px; }
+.label-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.input-shell { position: relative; }
+.input-shell > span { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--muted); pointer-events: none; display: grid; }
+.input-shell .app-icon { width: 17px; height: 17px; }
+.input-shell input { padding-left: 43px; }
+.auth-submit { margin-top: 6px; justify-content: center; min-height: 50px; box-shadow: 0 10px 24px rgba(95,158,32,.22); }
+.auth-submit .app-icon { margin-left: auto; }
+.auth-security-note { display: flex; align-items: center; justify-content: center; gap: 7px; color: var(--muted); font-size: 10px; margin: 18px 0 0; text-align: center; }
+.auth-security-note .app-icon { width: 14px; height: 14px; color: var(--primary-2); }
+.auth-note { background: var(--surface-2); color: var(--muted); border-color: var(--line); margin-top: 13px; }
+.auth-link { font-size: 11px; color: var(--primary-2); }
+.password-rules { color: var(--muted); background: var(--surface-2); border-color: var(--line); }
+.password-visual .auth-photo-layer { background-position: 38% center; filter: saturate(.9); }
+
+/* Enterprise shell */
+.app-shell { min-height: 100vh; }
+.sidebar {
+  width: var(--sidebar);
+  background:
+    radial-gradient(circle at 8% 0, rgba(118,184,42,.15), transparent 16rem),
+    linear-gradient(180deg, var(--brand-navy) 0%, var(--brand-navy-2) 100%);
+  color: #eef5f2;
+  box-shadow: 14px 0 36px rgba(8,27,35,.12);
+  overflow: visible;
+}
+.sidebar .brand-area { height: 96px; padding: 15px 16px; border-bottom: 1px solid rgba(255,255,255,.08); position: relative; }
+.sidebar-logo-full { width: 218px; background: #fff; border-radius: 13px; padding: 8px 10px; box-shadow: 0 8px 24px rgba(0,0,0,.16); transition: opacity .2s ease, width .2s ease; overflow: hidden; }
+.sidebar-logo { width: 198px; height: auto; display: block; }
+.sidebar-logo-mark { display: none; width: 46px; height: 46px; border-radius: 13px; }
+.sidebar-collapse-btn { position: absolute; right: -13px; top: 37px; z-index: 2; width: 27px; height: 27px; border: 1px solid var(--line); border-radius: 9px; display: grid; place-items: center; background: var(--surface); color: var(--brand-navy); box-shadow: 0 5px 16px rgba(16,43,55,.17); transition: transform .25s ease, color .2s ease; }
+.sidebar-collapse-btn:hover { color: var(--primary-2); }
+.sidebar-collapse-btn .app-icon { width: 15px; height: 15px; }
+.factory-chip { margin: 13px 12px 4px; padding: 11px 12px; display: grid; grid-template-columns: 34px 1fr; gap: 10px; align-items: center; border: 1px solid rgba(255,255,255,.09); border-radius: 12px; background: rgba(255,255,255,.055); overflow: hidden; }
+.factory-chip > span { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 10px; color: #a7dc64; background: rgba(118,184,42,.12); }
+.factory-chip strong, .factory-chip small { display: block; white-space: nowrap; }
+.factory-chip strong { font-size: 10px; color: #fff; text-overflow: ellipsis; overflow: hidden; }
+.factory-chip small { font-size: 8.5px; color: rgba(238,245,242,.5); margin-top: 3px; letter-spacing: .04em; }
+.nav-scroll { padding: 8px 11px 18px; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.14) transparent; }
+.nav-section-title { padding: 18px 12px 7px; font-size: 8.5px; font-weight: 800; letter-spacing: .16em; color: rgba(238,245,242,.38); }
+.nav-item { position: relative; min-height: 45px; gap: 12px; padding: 11px 12px; border-radius: 12px; color: rgba(238,245,242,.7); overflow: hidden; }
+.nav-item::before { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, rgba(118,184,42,.16), transparent); opacity: 0; transition: opacity .2s ease; }
+.nav-item:hover { background: rgba(255,255,255,.055); color: #fff; transform: translateX(2px); }
+.nav-item.active { background: rgba(118,184,42,.13); color: #fff; box-shadow: none; }
+.nav-item.active::before { opacity: 1; }
+.nav-icon { position: relative; z-index: 1; width: 22px; display: grid; place-items: center; color: rgba(238,245,242,.64); }
+.nav-item.active .nav-icon { color: #a7dc64; }
+.nav-label { position: relative; z-index: 1; font-size: 11.5px; font-weight: 600; letter-spacing: .005em; }
+.nav-active-marker { position: absolute; right: 8px; width: 5px; height: 5px; border-radius: 50%; background: #a7dc64; opacity: 0; box-shadow: 0 0 10px rgba(167,220,100,.7); }
+.nav-item.active .nav-active-marker { opacity: 1; }
+.sidebar-bottom { padding: 13px; background: rgba(0,0,0,.09); }
+.user-mini { padding: 9px; border: 1px solid rgba(255,255,255,.08); background: rgba(255,255,255,.045); }
+.avatar { background: linear-gradient(145deg, var(--primary), var(--primary-strong)); color: #fff; box-shadow: 0 4px 12px rgba(95,158,32,.22); }
+.sidebar .avatar { background: linear-gradient(145deg, #91cf49, #6ca72d); color: #102b37; }
+.sidebar-logout { width: 34px; height: 34px; display: grid; place-items: center; flex: 0 0 auto; border: 0; border-radius: 10px; color: rgba(255,255,255,.6); background: transparent; }
+.sidebar-logout:hover { color: #fff; background: rgba(255,255,255,.08); }
+.sidebar-logout .app-icon { width: 17px; }
+
+.sidebar-collapsed .sidebar { width: var(--sidebar-collapsed); }
+.sidebar-collapsed .sidebar-logo-full, .sidebar-collapsed .factory-chip > div, .sidebar-collapsed .nav-label, .sidebar-collapsed .nav-section-title, .sidebar-collapsed .user-info, .sidebar-collapsed .sidebar-logout { display: none; }
+.sidebar-collapsed .sidebar-logo-mark { display: block; margin: auto; }
+.sidebar-collapsed .sidebar .brand-area { justify-content: center; padding-inline: 12px; }
+.sidebar-collapsed .sidebar-collapse-btn { transform: rotate(180deg); }
+.sidebar-collapsed .factory-chip { display: flex; justify-content: center; margin-inline: 12px; padding: 8px; }
+.sidebar-collapsed .nav-scroll { padding-inline: 11px; }
+.sidebar-collapsed .nav-item { justify-content: center; padding-inline: 10px; }
+.sidebar-collapsed .nav-icon { width: 24px; }
+.sidebar-collapsed .nav-active-marker { right: 5px; }
+.sidebar-collapsed .user-mini { justify-content: center; padding: 7px; }
+.sidebar-collapsed .topbar { left: var(--sidebar-collapsed); }
+.sidebar-collapsed .main-content { margin-left: var(--sidebar-collapsed); }
+
+/* Header */
+.topbar {
+  left: var(--sidebar);
+  height: var(--topbar);
+  padding: 0 22px;
+  background: color-mix(in srgb, var(--surface) 93%, transparent);
+  border-bottom-color: color-mix(in srgb, var(--line) 92%, transparent);
+  box-shadow: 0 3px 18px rgba(16,43,55,.035);
+}
+.topbar-left { min-width: 390px; gap: 13px; }
+.topbar-brand { display: flex; align-items: center; gap: 8px; color: var(--brand-navy); font-size: 11px; font-weight: 800; white-space: nowrap; }
+[data-theme="dark"] .topbar-brand { color: var(--text); }
+.topbar-brand img { width: 31px; height: 31px; border-radius: 9px; box-shadow: 0 4px 12px rgba(16,43,55,.13); }
+.topbar-divider { width: 1px; height: 28px; background: var(--line); }
+.page-heading h1 { font-size: 16px; font-weight: 700; }
+.page-heading small { font-size: 9.5px; }
+.topbar-search { max-width: 520px; }
+.topbar-search input { min-height: 42px; padding: 0 62px 0 43px; border: 1px solid var(--line); background: var(--surface-2); border-radius: 13px; font-size: 11px; }
+.topbar-search input:focus { background: var(--surface); border-color: color-mix(in srgb, var(--primary) 50%, var(--line)); box-shadow: 0 0 0 4px color-mix(in srgb, var(--primary) 10%, transparent); }
+.topbar-search kbd { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 7px; background: var(--surface); color: var(--muted); padding: 3px 6px; font: 600 8px/1 "Inter", sans-serif; }
+.icon-btn { width: 40px; height: 40px; border-radius: 12px; box-shadow: 0 2px 8px rgba(16,43,55,.035); transition: transform .18s ease, border-color .18s ease, color .18s ease, background .18s ease; }
+.icon-btn:hover { transform: translateY(-1px); background: var(--primary-soft); }
+.profile-control { position: relative; }
+.profile-trigger { height: 46px; min-width: 174px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); color: var(--text); display: grid; grid-template-columns: 34px 1fr 16px; gap: 9px; align-items: center; text-align: left; padding: 5px 9px 5px 6px; transition: border-color .18s ease, box-shadow .18s ease; }
+.profile-trigger:hover { border-color: color-mix(in srgb, var(--primary) 45%, var(--line)); box-shadow: 0 6px 18px rgba(16,43,55,.07); }
+.profile-trigger .avatar { width: 34px; height: 34px; font-size: 10px; }
+.profile-trigger > .app-icon { width: 14px; height: 14px; color: var(--muted); }
+.profile-trigger-copy { min-width: 0; }
+.profile-trigger-copy strong, .profile-trigger-copy span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.profile-trigger-copy strong { font-size: 10.5px; }
+.profile-trigger-copy span { font-size: 8.5px; color: var(--primary-2); margin-top: 2px; font-weight: 700; letter-spacing: .04em; }
+.profile-menu { position: absolute; right: 0; top: calc(100% + 10px); width: 265px; padding: 8px; background: var(--surface); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); opacity: 0; visibility: hidden; transform: translateY(-7px) scale(.98); transform-origin: top right; transition: .18s ease; }
+.profile-menu.open { opacity: 1; visibility: visible; transform: translateY(0) scale(1); }
+.profile-menu-head { display: grid; grid-template-columns: 46px 1fr; gap: 11px; padding: 12px; background: var(--surface-2); border-radius: 12px; }
+.avatar.large { width: 46px; height: 46px; }
+.profile-menu-head strong, .profile-menu-head span, .profile-menu-head small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.profile-menu-head strong { font-size: 11px; }
+.profile-menu-head span { font-size: 9px; color: var(--muted); margin: 3px 0 5px; }
+.profile-menu-head small { width: fit-content; color: var(--primary-2); background: var(--primary-soft); padding: 3px 6px; border-radius: 5px; font-size: 7.5px; font-weight: 800; letter-spacing: .05em; }
+.profile-menu > button { width: 100%; display: flex; align-items: center; gap: 10px; border: 0; border-radius: 10px; background: transparent; color: var(--danger); padding: 10px 11px; margin-top: 6px; font-size: 10px; font-weight: 700; }
+.profile-menu > button:hover { background: var(--danger-soft); }
+
+/* Main content and page rhythm */
+.main-content { margin-left: var(--sidebar); padding: calc(var(--topbar) + 28px) 26px 44px; }
+.content-wrap { max-width: 1760px; }
+#page-content { animation: pageReveal .28s ease both; }
+@keyframes pageReveal { from { opacity: 0; transform: translateY(7px); } }
+.page-toolbar { align-items: center; margin-bottom: 22px; }
+.page-toolbar-copy .eyebrow { margin-bottom: 6px; }
+.page-toolbar h2 { margin: 0 0 4px; font-size: 24px; color: var(--text); }
+.page-toolbar p { font-size: 11px; }
+.toolbar-actions { align-items: center; }
+
+/* Dashboard */
+.dashboard-hero { min-height: 225px; border-radius: 22px; overflow: hidden; position: relative; isolation: isolate; display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: end; gap: 24px; padding: clamp(25px, 3vw, 40px); color: #fff; margin-bottom: 19px; box-shadow: 0 18px 44px rgba(16,43,55,.17); }
+.dashboard-hero-media { position: absolute; inset: 0; z-index: -2; background-image: url("https://www.profile-solution.com/wp-content/uploads/Data-Centerrrrrrrrrrr-new-1.webp"); background-size: cover; background-position: center; transition: transform 7s ease; }
+.dashboard-hero:hover .dashboard-hero-media { transform: scale(1.035); }
+.dashboard-hero-overlay { position: absolute; inset: 0; z-index: -1; background: linear-gradient(100deg, rgba(7,28,37,.97) 0%, rgba(12,43,54,.9) 52%, rgba(27,70,57,.65) 100%); }
+.dashboard-hero-content { max-width: 780px; }
+.dashboard-hero h3 { font-size: clamp(27px, 3vw, 42px); line-height: 1.1; margin: 12px 0 10px; }
+.dashboard-hero p { max-width: 680px; color: rgba(255,255,255,.73); font-size: 12px; line-height: 1.65; margin: 0; }
+.hero-meta { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; margin-top: 22px; }
+.hero-meta span { display: inline-flex; align-items: center; gap: 7px; color: rgba(255,255,255,.74); font-size: 10px; }
+.hero-meta .app-icon { width: 15px; height: 15px; color: #a7dc64; }
+.dashboard-hero-score { width: 155px; min-height: 145px; padding: 19px; display: flex; flex-direction: column; justify-content: center; border: 1px solid rgba(255,255,255,.16); border-radius: 18px; background: rgba(255,255,255,.09); backdrop-filter: blur(12px); }
+.dashboard-hero-score span { font-size: 9px; text-transform: uppercase; letter-spacing: .11em; color: rgba(255,255,255,.62); }
+.dashboard-hero-score strong { font: 800 39px/1.15 "Poppins", sans-serif; color: #a7dc64; margin: 7px 0 4px; }
+.dashboard-hero-score small { color: rgba(255,255,255,.62); font-size: 9px; line-height: 1.4; }
+.kpi-grid { margin-bottom: 0; }
+
+/* Cards and KPI */
+.card { border-color: color-mix(in srgb, var(--line) 88%, white); box-shadow: var(--shadow-sm); transition: transform .2s ease, box-shadow .2s ease, border-color .2s ease; }
+.card:hover { border-color: color-mix(in srgb, var(--primary) 16%, var(--line)); box-shadow: var(--shadow-hover); }
+.card-header { padding: 20px 21px 13px; }
+.card-header h3 { font-size: 14px; }
+.card-header p { font-size: 10px; }
+.card-body { padding: 18px 21px 22px; }
+.kpi-card { min-height: 110px; padding: 19px; gap: 14px; }
+.kpi-card:hover { transform: translateY(-3px); }
+.kpi-card::after { width: 110px; height: 110px; right: -47px; top: -49px; background: radial-gradient(circle, var(--primary-soft), transparent 70%); }
+.kpi-card::before { content: ""; position: absolute; left: 0; top: 20%; bottom: 20%; width: 3px; border-radius: 0 4px 4px 0; background: linear-gradient(var(--primary), var(--primary-strong)); opacity: .75; }
+.kpi-icon { width: 48px; height: 48px; min-width: 48px; border-radius: 15px; background: linear-gradient(145deg, var(--primary-soft), color-mix(in srgb, var(--primary-soft) 55%, white)); border: 1px solid color-mix(in srgb, var(--primary) 16%, var(--line)); }
+.kpi-icon .app-icon { width: 22px; height: 22px; }
+.kpi-copy span { font-size: 9.5px; text-transform: uppercase; letter-spacing: .07em; font-weight: 700; }
+.kpi-copy strong { font-size: 25px; margin: 3px 0 2px; }
+.kpi-meta { font-size: 9px; }
+.chart-box { min-height: 280px; }
+
+/* Buttons */
+.btn { min-height: 39px; display: inline-flex; align-items: center; gap: 7px; justify-content: center; border-radius: 11px; padding: 8px 14px; font-size: 10px; font-weight: 750; letter-spacing: .005em; transition: transform .17s ease, box-shadow .17s ease, background .17s ease, border-color .17s ease; }
+.btn:hover { transform: translateY(-1px); }
+.btn:active { transform: translateY(0) scale(.985); }
+.btn-primary { color: #fff; background: linear-gradient(135deg, var(--primary), var(--primary-strong)); border-color: var(--primary-strong); box-shadow: 0 7px 18px rgba(95,158,32,.18); }
+.btn-primary:hover { background: linear-gradient(135deg, #83c735, #5c991e); box-shadow: 0 10px 24px rgba(95,158,32,.25); }
+.btn-secondary { background: var(--surface); border-color: var(--line); color: var(--text); }
+.btn-secondary:hover { border-color: color-mix(in srgb, var(--primary) 35%, var(--line)); color: var(--primary-2); background: var(--primary-soft); }
+.btn-ghost { color: var(--muted); }
+.btn-danger { background: var(--danger-soft); color: var(--danger); border-color: color-mix(in srgb, var(--danger) 25%, var(--line)); }
+.btn-lg { min-height: 49px; font-size: 11px; border-radius: 13px; }
+.btn-sm { min-height: 31px; padding: 5px 9px; border-radius: 9px; font-size: 9px; }
+.icon-btn, .close-btn, .sidebar-collapse-btn, .sidebar-logout { cursor: pointer; }
+
+/* Forms */
+.form-group { margin-bottom: 14px; }
+.form-group label { margin-bottom: 7px; font-size: 9.5px; color: var(--text); font-weight: 750; letter-spacing: .02em; }
+input, select, textarea { min-height: 43px; border-radius: 11px; border: 1px solid var(--line); background: var(--surface); color: var(--text); padding: 10px 12px; font-size: 11px; transition: border-color .17s ease, box-shadow .17s ease, background .17s ease; }
+textarea { min-height: 92px; line-height: 1.5; }
+input::placeholder, textarea::placeholder { color: color-mix(in srgb, var(--muted) 70%, transparent); }
+input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var(--primary) 30%, var(--line)); }
+input:focus, select:focus, textarea:focus { outline: 0; border-color: color-mix(in srgb, var(--primary) 62%, var(--line)); box-shadow: 0 0 0 4px color-mix(in srgb, var(--primary) 10%, transparent); background: var(--surface); }
+.form-grid { gap: 14px; }
+.filter-bar { padding: 12px; border-radius: 15px; box-shadow: 0 5px 18px rgba(16,43,55,.04); }
+.filter-bar input, .filter-bar select { min-height: 39px; background: var(--surface-2); }
+
+/* Tables */
+.table-card { overflow: hidden; }
+.table-wrap { max-height: min(68vh, 720px); overflow: auto; scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--primary) 35%, var(--line)) transparent; }
+table { border-collapse: separate; border-spacing: 0; }
+thead { position: sticky; top: 0; z-index: 5; }
+th { background: color-mix(in srgb, var(--surface-2) 94%, var(--primary-soft)); color: var(--brand-slate); font-size: 8.5px; font-weight: 800; letter-spacing: .075em; text-transform: uppercase; border-bottom: 1px solid var(--line); box-shadow: 0 1px 0 var(--line); }
+[data-theme="dark"] th { color: var(--text); }
+th, td { padding: 13px 14px; }
+td { font-size: 10.5px; border-bottom-color: color-mix(in srgb, var(--line) 80%, transparent); }
+tbody tr { transition: background .16s ease, transform .16s ease; }
+tbody tr:hover { background: color-mix(in srgb, var(--primary-soft) 50%, var(--surface)); }
+tbody tr:last-child td { border-bottom: 0; }
+.table-footer { min-height: 48px; padding: 11px 15px; border-top: 1px solid var(--line); background: var(--surface-2); font-size: 9px; color: var(--muted); }
+.table-actions { gap: 5px; }
+.status, .role-chip { font-size: 8px; padding: 5px 8px; border-radius: 999px; font-weight: 800; letter-spacing: .03em; }
+.progress-line { height: 6px; background: var(--surface-3); }
+.progress-line span { background: linear-gradient(90deg, var(--primary), #9bd54c); box-shadow: 0 0 8px rgba(118,184,42,.2); }
+
+/* Activity, states and timelines */
+.activity-item { padding: 12px 0; }
+.activity-icon { width: 36px; height: 36px; border-radius: 11px; background: var(--primary-soft); color: var(--primary-2); }
+.activity-icon .app-icon { width: 18px; height: 18px; }
+.activity-main strong { font-size: 10.5px; }
+.activity-main span, .activity-time { font-size: 9px; }
+.empty-icon .app-icon { width: 26px; height: 26px; }
+.empty-state { color: var(--muted); }
+.timeline-stage .stage-circle { box-shadow: 0 5px 14px rgba(16,43,55,.09); }
+.timeline-stage.completed .stage-circle, .timeline-stage.active .stage-circle { background: linear-gradient(145deg, var(--primary), var(--primary-strong)); }
+
+/* Modals, notifications and toasts */
+.modal-backdrop { background: rgba(5,20,27,.61); backdrop-filter: blur(7px); }
+.modal { border-radius: 22px; border-color: color-mix(in srgb, var(--line) 88%, white); box-shadow: 0 30px 90px rgba(5,20,27,.28); }
+.modal-header, .modal-footer { background: color-mix(in srgb, var(--surface) 96%, transparent); backdrop-filter: blur(12px); }
+.modal-header h3 { font-size: 17px; }
+.notification-panel { border-left-color: var(--line); box-shadow: -18px 0 48px rgba(16,43,55,.14); }
+.notification-panel .panel-head { min-height: 78px; }
+.notification-panel .panel-head > div:first-child { display: grid; gap: 4px; }
+.notification-panel .panel-head strong { font-family: "Poppins", sans-serif; font-size: 16px; }
+.notification-item { border: 1px solid transparent; }
+.notification-item:hover { border-color: var(--line); }
+.notification-item.unread { background: color-mix(in srgb, var(--primary-soft) 74%, var(--surface)); border-color: color-mix(in srgb, var(--primary) 13%, var(--line)); }
+.toast { border-radius: 14px; box-shadow: var(--shadow); }
+.info-banner { border-radius: 14px; }
+.info-banner > div:first-child .app-icon { width: 17px; height: 17px; }
+.import-drop { border-radius: 18px; }
+.tabs { gap: 8px; }
+.tab { border-radius: 9px 9px 0 0; }
+
+.mobile-nav-backdrop { display: none; }
+
+/* Accessibility and motion */
+button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: not-allowed; opacity: .62; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+}
+
+/* Responsive shell */
+@media (max-width: 1360px) {
+  .topbar-left { min-width: 330px; }
+  .topbar-brand span, .topbar-divider { display: none; }
+  .profile-trigger { min-width: 145px; }
+  .grid-5 { grid-template-columns: repeat(3, minmax(0,1fr)); }
+}
+@media (max-width: 1120px) {
+  .topbar-search kbd { display: none; }
+  .topbar-search input { padding-right: 13px; }
+  .profile-trigger { min-width: 44px; width: 44px; grid-template-columns: 34px; padding: 5px; }
+  .profile-trigger-copy, .profile-trigger > .app-icon { display: none; }
+  .dashboard-hero { grid-template-columns: 1fr; }
+  .dashboard-hero-score { width: 100%; min-height: auto; display: grid; grid-template-columns: 1fr auto; align-items: center; column-gap: 14px; }
+  .dashboard-hero-score strong { grid-row: 1 / span 2; grid-column: 2; }
+}
+@media (max-width: 980px) {
+  .auth-shell { grid-template-columns: 1fr; }
+  .auth-visual { min-height: 430px; padding: 30px; }
+  .auth-hero { margin: 45px 0 10px; padding: 25px 0; }
+  .auth-hero h2 { font-size: clamp(37px, 8vw, 58px); }
+  .auth-foot { margin-top: 20px; }
+  .auth-panel { padding: 38px 22px; }
+  .sidebar, .sidebar-collapsed .sidebar { width: min(290px, calc(100vw - 54px)); transform: translateX(-104%); }
+  .sidebar.open { transform: translateX(0); }
+  .sidebar-collapsed .sidebar-logo-full, .sidebar-collapsed .factory-chip > div, .sidebar-collapsed .nav-label, .sidebar-collapsed .nav-section-title, .sidebar-collapsed .user-info, .sidebar-collapsed .sidebar-logout { display: initial; }
+  .sidebar-collapsed .sidebar-logo-full { display: block; }
+  .sidebar-collapsed .sidebar-logo-mark { display: none; }
+  .sidebar-collapsed .factory-chip { display: grid; justify-content: initial; padding: 11px 12px; }
+  .sidebar-collapsed .nav-item { justify-content: flex-start; padding: 11px 12px; }
+  .sidebar-collapsed .user-mini { justify-content: initial; padding: 9px; }
+  .sidebar-collapse-btn { display: none; }
+  .topbar, .sidebar-collapsed .topbar { left: 0; }
+  .main-content, .sidebar-collapsed .main-content { margin-left: 0; }
+  .topbar-left { min-width: auto; }
+  .topbar-brand { display: none; }
+  .mobile-nav-backdrop { display: block; position: fixed; inset: 0; background: rgba(5,20,27,.46); backdrop-filter: blur(3px); z-index: 29; opacity: 0; visibility: hidden; transition: .2s ease; }
+  .sidebar.open ~ .topbar ~ .main-content ~ .notification-panel ~ .mobile-nav-backdrop { opacity: 1; visibility: visible; }
+  .grid-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 720px) {
+  .auth-visual { display: none; }
+  .auth-panel { min-height: 100vh; padding: 22px 15px; align-items: center; }
+  .auth-mobile-brand { display: block; width: min(300px, 80vw); background: #fff; border-radius: 14px; padding: 8px 12px; margin: 0 auto 22px; box-shadow: 0 10px 26px rgba(16,43,55,.1); }
+  .auth-mobile-logo { width: 100%; height: auto; display: block; }
+  .auth-card { padding: 25px 20px; border-radius: 20px; }
+  .auth-card-heading { grid-template-columns: 43px 1fr; }
+  .auth-card-icon { width: 42px; height: 42px; }
+  .topbar { padding: 0 12px; gap: 8px; }
+  .topbar-search { display: none; }
+  .topbar-actions { gap: 5px; }
+  .profile-trigger { min-width: 40px; width: 40px; height: 40px; }
+  .profile-trigger .avatar { width: 30px; height: 30px; }
+  .page-heading h1 { font-size: 14px; }
+  .main-content { padding: calc(var(--topbar) + 20px) 12px 34px; }
+  .page-toolbar { align-items: flex-start; }
+  .page-toolbar h2 { font-size: 21px; }
+  .dashboard-hero { min-height: 260px; padding: 24px; }
+  .dashboard-hero h3 { font-size: 29px; }
+  .grid-2, .grid-3, .grid-4, .grid-5 { grid-template-columns: 1fr; }
+  .grid-3 > [style*="grid-column:span 2"] { grid-column: span 1 !important; }
+  .table-wrap { max-height: none; }
+  th, td { white-space: nowrap; }
+  .card:hover, .kpi-card:hover { transform: none; }
+  .profile-menu { position: fixed; top: var(--topbar); right: 10px; }
+}
+@media (max-width: 430px) {
+  .auth-card-heading { grid-template-columns: 1fr; }
+  .auth-card-icon { display: none; }
+  .auth-card { padding: 24px 18px; }
+  .page-heading small { display: none; }
+  .dashboard-hero-score { grid-template-columns: 1fr; }
+  .dashboard-hero-score strong { grid-row: auto; grid-column: auto; }
+  .toolbar-actions .btn { flex: 1; }
+}
+
+/* Accessible button progress state */
+form.is-busy button[type="submit"], form.is-busy .btn-primary:last-child { position: relative; }
+form.is-busy button[type="submit"]::after, form.is-busy .btn-primary:last-child::after {
+  content: ""; width: 14px; height: 14px; margin-left: 9px; border: 2px solid currentColor;
+  border-right-color: transparent; border-radius: 50%; display: inline-block; vertical-align: -2px;
+  animation: ps-button-spin .7s linear infinite;
+}
+@keyframes ps-button-spin { to { transform: rotate(360deg); } }
+.btn-primary { background: linear-gradient(135deg, #5d9820, #417513); border-color: #417513; }
+.btn-primary:hover { background: linear-gradient(135deg, #548d1a, #38680e); }
+
   </style>
 </head>
 <body>
-  <div id="app"><div style="min-height:100vh;display:grid;place-items:center;font-family:Arial,sans-serif"><div>Loading Factory ERP…</div></div></div>
-  <input id="excel-file-input" type="file" accept=".xlsx,.xls,.csv" hidden />
-  <input id="backup-file-input" type="file" accept=".json" hidden />
-  <noscript>This ERP requires JavaScript.</noscript>
+  <div id="app"></div>
+  <input type="file" id="backup-file-input" accept="application/json" class="hidden" />
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script>
@@ -455,12 +970,73 @@ tbody tr:hover { background: color-mix(in srgb, var(--primary-soft) 35%, transpa
     'INDENT NO', 'INDENT ISSUE DATE', 'TENT DEL DATE', 'SHORTAGES', 'STATUS'
   ];
 
+  const BRAND = {
+    name: 'Profile Solutions',
+    erpName: 'Profile Solutions ERP',
+    tagline: 'Data Center Infrastructure Experts',
+    factory: 'Wada Manufacturing Unit',
+    logo: 'assets/profile-solutions-logo.svg',
+    mark: 'assets/favicon.svg',
+    website: 'https://www.profile-solution.com/',
+    heroImage: 'https://www.profile-solution.com/wp-content/uploads/profilell-newww-1-1.webp',
+    dataCenterImage: 'https://www.profile-solution.com/wp-content/uploads/Data-Centerrrrrrrrrrr-new-1.webp'
+  };
+
+  function svgIcon(name, className = 'app-icon') {
+    const paths = {
+      dashboard: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
+      projects: '<path d="M3 7h5l2 2h11v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M3 7V5a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2"/>',
+      production: '<path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/><circle cx="12" cy="12" r="4"/>',
+      import: '<path d="M12 3v12"/><path d="m7 8 5-5 5 5"/><path d="M5 21h14a2 2 0 0 0 2-2v-4M3 15v4a2 2 0 0 0 2 2"/>',
+      reports: '<path d="M4 19V9M10 19V5M16 19v-7M22 19V3"/><path d="M2 21h22"/>',
+      users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>',
+      audit: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+      settings: '<path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1V21h-4v-.1A1.7 1.7 0 0 0 8.5 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1-.4H3v-4h.1A1.7 1.7 0 0 0 4.6 8.5a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1V3h4v.1A1.7 1.7 0 0 0 15.5 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.1.37.3.72.6 1 .27.26.62.4 1 .4h.1v4H21a1.7 1.7 0 0 0-1.6.6Z"/>',
+      shortage: '<path d="M10.3 2.9 1.8 17a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 2.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4M12 17h.01"/>',
+      logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5M21 12H9"/>',
+      search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/>',
+      bell: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/>',
+      menu: '<path d="M4 6h16M4 12h16M4 18h16"/>',
+      theme: '<path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8Z"/>',
+      plus: '<path d="M12 5v14M5 12h14"/>',
+      edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/>',
+      view: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>',
+      delete: '<path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v6M14 11v6"/>',
+      download: '<path d="M12 3v12M7 10l5 5 5-5M5 21h14"/>',
+      upload: '<path d="M12 21V9M7 14l5-5 5 5M5 3h14"/>',
+      check: '<path d="m5 12 4 4L19 6"/>',
+      clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+      project: '<path d="M4 4h16v16H4z"/><path d="M8 8h8M8 12h8M8 16h5"/>',
+      item: '<path d="m12 2 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5M3 17l9 5 9-5"/>',
+      factory: '<path d="M3 21V9l6 3V8l6 4V5l6 4v12Z"/><path d="M7 21v-4h4v4M16 14h1M16 18h1"/>',
+      target: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/>',
+      issue: '<circle cx="12" cy="12" r="9"/><path d="M12 7v6M12 17h.01"/>',
+      ready: '<path d="M5 12h14M13 6l6 6-6 6"/>',
+      chevronLeft: '<path d="m15 18-6-6 6-6"/>',
+      chevronDown: '<path d="m6 9 6 6 6-6"/>',
+      refresh: '<path d="M20 6v5h-5"/><path d="M4 18v-5h5"/><path d="M6.1 8a7 7 0 0 1 11.5-2L20 11M4 13l2.4 5a7 7 0 0 0 11.5-2"/>',
+      lock: '<rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>',
+      mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/>',
+      user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
+      shield: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="m9 12 2 2 4-4"/>',
+      calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/>',
+      arrowRight: '<path d="M5 12h14M13 6l6 6-6 6"/>'
+    };
+    return `<svg class="${className}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${paths[name] || paths.issue}</svg>`;
+  }
+
+  function brandLogo(className = 'brand-logo') {
+    return `<img class="${className}" src="${BRAND.logo}" alt="Profile Solutions" decoding="async">`;
+  }
+
   const ICONS = {
-    dashboard: '▦', projects: '▣', production: '⚙', import: '⇧', reports: '▤',
-    users: '♙', audit: '◷', settings: '⚒', shortage: '⚠', logout: '↪',
-    search: '⌕', bell: '♢', menu: '☰', theme: '◐', plus: '+', edit: '✎',
-    view: '◉', delete: '×', download: '⇩', upload: '⇧', check: '✓', clock: '◷',
-    project: '▧', item: '◫', factory: '⌂', target: '◎', issue: '!', ready: '➜'
+    dashboard: svgIcon('dashboard'), projects: svgIcon('projects'), production: svgIcon('production'), import: svgIcon('import'), reports: svgIcon('reports'),
+    users: svgIcon('users'), audit: svgIcon('audit'), settings: svgIcon('settings'), shortage: svgIcon('shortage'), logout: svgIcon('logout'),
+    search: svgIcon('search'), bell: svgIcon('bell'), menu: svgIcon('menu'), theme: svgIcon('theme'), plus: svgIcon('plus'), edit: svgIcon('edit'),
+    view: svgIcon('view'), delete: svgIcon('delete'), download: svgIcon('download'), upload: svgIcon('upload'), check: svgIcon('check'), clock: svgIcon('clock'),
+    project: svgIcon('project'), item: svgIcon('item'), factory: svgIcon('factory'), target: svgIcon('target'), issue: svgIcon('issue'), ready: svgIcon('ready'),
+    chevronLeft: svgIcon('chevronLeft'), chevronDown: svgIcon('chevronDown'), refresh: svgIcon('refresh'), lock: svgIcon('lock'), mail: svgIcon('mail'),
+    user: svgIcon('user'), shield: svgIcon('shield'), calendar: svgIcon('calendar'), arrowRight: svgIcon('arrowRight')
   };
 
   const NAV = [
@@ -476,6 +1052,8 @@ tbody tr:hover { background: color-mix(in srgb, var(--primary-soft) 35%, transpa
   ];
 
   let state = loadState();
+  if (state.settings.companyName === 'Factory ERP') state.settings.companyName = BRAND.erpName;
+  if (state.settings.factoryName === 'Main Manufacturing Unit') state.settings.factoryName = BRAND.factory;
   let currentRoute = 'dashboard';
   let supabaseClient = null;
   let authSession = null;
@@ -493,11 +1071,12 @@ tbody tr:hover { background: color-mix(in srgb, var(--primary-soft) 35%, transpa
     return {
       version: 6,
       settings: {
-        companyName: 'Factory ERP',
-        factoryName: 'Main Manufacturing Unit',
+        companyName: 'Profile Solutions ERP',
+        factoryName: 'Wada Manufacturing Unit',
         theme: 'light',
         dateFormat: 'DD/MM/YYYY',
-        notifications: true
+        notifications: true,
+        sidebarCollapsed: false
       },
       users: [],
       projects: [],
@@ -650,73 +1229,97 @@ tbody tr:hover { background: color-mix(in srgb, var(--primary-soft) 35%, transpa
   }
 
   function renderAuthLoading() {
-    document.getElementById('app').innerHTML = `<div class="auth-shell"><section class="auth-visual"><div class="brand-lockup"><div class="brand-mark">ERP</div><div><h1>${esc(state.settings.companyName)}</h1><p>Manufacturing Operations Platform</p></div></div><div class="auth-hero"><h2>Secure authentication is loading.</h2><p>Connecting to Supabase Authentication and checking the ERP configuration.</p></div></section><section class="auth-panel"><div class="auth-card"><div class="empty-state"><div class="empty-icon">◷</div><h3>Please wait</h3><p>Loading secure sign-in…</p></div></div></section></div>`;
+    document.getElementById('app').innerHTML = `
+      <div class="loading-screen" role="status" aria-live="polite">
+        <div class="loading-glow loading-glow-one"></div><div class="loading-glow loading-glow-two"></div>
+        <div class="loading-card">
+          ${brandLogo('loading-logo')}
+          <div class="loading-orbit"><span></span><span></span><span></span></div>
+          <h1>Profile Solutions ERP</h1>
+          <p>Preparing your secure manufacturing workspace…</p>
+          <div class="loading-progress"><span></span></div>
+        </div>
+      </div>`;
   }
 
   function renderAuth() {
     document.getElementById('app').innerHTML = `
       <div class="auth-shell">
-        <section class="auth-visual">
-          <div class="brand-lockup"><div class="brand-mark">ERP</div><div><h1>${esc(state.settings.companyName)}</h1><p>Manufacturing Operations Platform</p></div></div>
+        <section class="auth-visual" aria-label="Profile Solutions manufacturing platform">
+          <div class="auth-photo-layer" aria-hidden="true"></div>
+          <div class="auth-overlay" aria-hidden="true"></div>
+          <div class="auth-brand-row">
+            <div class="auth-logo-panel">${brandLogo('auth-brand-logo')}</div>
+            <span class="auth-brand-chip">Enterprise Operations</span>
+          </div>
           <div class="auth-hero">
-            <h2>Control every production stage from one place.</h2>
-            <p>Secure temporary passwords, forced first-login password changes, role-based access, projects, BOM items, shortages, reports and production tracking.</p>
+            <span class="eyebrow"><i></i> Wada Factory ERP</span>
+            <h2>Engineering precision.<br><em>Operational clarity.</em></h2>
+            <p>A unified workspace for projects, production stages, shortages, reporting and secure role-based operations.</p>
             <div class="auth-stats">
-              <div class="auth-stat"><strong>9</strong><span>Production stages</span></div>
-              <div class="auth-stat"><strong>3</strong><span>Role levels</span></div>
-              <div class="auth-stat"><strong>1×</strong><span>Temporary password</span></div>
+              <div class="auth-stat"><span class="auth-stat-icon">${ICONS.production}</span><strong>9</strong><span>Production stages</span></div>
+              <div class="auth-stat"><span class="auth-stat-icon">${ICONS.shield}</span><strong>3</strong><span>Controlled role levels</span></div>
+              <div class="auth-stat"><span class="auth-stat-icon">${ICONS.factory}</span><strong>1</strong><span>Connected workspace</span></div>
             </div>
           </div>
-          <div class="auth-foot">Supabase Auth + Netlify Functions • SMTP and invitation emails are not required</div>
+          <div class="auth-foot"><span>Profile Data Center Solutions Pvt. Ltd.</span><span>Data Center Infrastructure Experts</span></div>
         </section>
-        <section class="auth-panel"><div class="auth-card">
-          ${authMessage ? `<div class="info-banner ${authMessage.startsWith('ERROR:') ? 'danger' : ''}"><div>${authMessage.startsWith('ERROR:') ? '!' : '✓'}</div><div><p>${esc(authMessage.replace(/^ERROR:\s*/,''))}</p></div></div>` : ''}
-          ${setupRequired ? setupForm() : loginForm()}
-        </div></section>
+        <section class="auth-panel">
+          <div class="auth-panel-inner">
+            <div class="auth-mobile-brand">${brandLogo('auth-mobile-logo')}</div>
+            <div class="auth-card">
+              ${authMessage ? `<div class="info-banner ${authMessage.startsWith('ERROR:') ? 'danger' : ''}"><div>${authMessage.startsWith('ERROR:') ? ICONS.issue : ICONS.check}</div><div><p>${esc(authMessage.replace(/^ERROR:\s*/,''))}</p></div></div>` : ''}
+              ${setupRequired ? setupForm() : loginForm()}
+            </div>
+            <p class="auth-security-note">${ICONS.lock}<span>Secured by Supabase Authentication and protected Netlify Functions</span></p>
+          </div>
+        </section>
       </div>`;
     bindAuthEvents();
   }
 
   function setupForm() {
     return `
-      <h2>Create First Super Admin</h2>
-      <p>This one-time setup creates the first secured administrator in Supabase.</p>
-      <form id="setup-form">
-        <div class="form-group"><label>Full name</label><input name="name" required placeholder="Your full name" autocomplete="name"></div>
-        <div class="form-group"><label>Email Address</label><input name="email" type="email" required placeholder="admin@yourcompany.com" autocomplete="email"></div>
-        <div class="form-group"><label>Password</label><input name="password" type="password" required minlength="10" placeholder="Strong password" autocomplete="new-password"></div>
-        <div class="form-group"><label>Confirm password</label><input name="confirm" type="password" required minlength="10" placeholder="Repeat password" autocomplete="new-password"></div>
+      <div class="auth-card-heading"><span class="auth-card-icon">${ICONS.shield}</span><div><span class="eyebrow dark">Secure workspace setup</span><h2>Create First Super Admin</h2><p>This one-time setup creates the first secured administrator in Supabase.</p></div></div>
+      <form id="setup-form" class="auth-form">
+        <div class="form-group"><label for="setup-name">Full name</label><div class="input-shell"><span>${ICONS.user}</span><input id="setup-name" name="name" required placeholder="Your full name" autocomplete="name"></div></div>
+        <div class="form-group"><label for="setup-email">Email Address</label><div class="input-shell"><span>${ICONS.mail}</span><input id="setup-email" name="email" type="email" required placeholder="admin@profile-solution.com" autocomplete="email"></div></div>
+        <div class="form-group"><label for="setup-password">Password</label><div class="input-shell"><span>${ICONS.lock}</span><input id="setup-password" name="password" type="password" required minlength="10" placeholder="Strong password" autocomplete="new-password"></div></div>
+        <div class="form-group"><label for="setup-confirm">Confirm password</label><div class="input-shell"><span>${ICONS.lock}</span><input id="setup-confirm" name="confirm" type="password" required minlength="10" placeholder="Repeat password" autocomplete="new-password"></div></div>
         <div class="password-rules">Use at least 10 characters with uppercase, lowercase, number and special character.</div>
-        <button class="btn btn-primary btn-lg w-100" type="submit">Create Super Admin</button>
+        <button class="btn btn-primary btn-lg w-100 auth-submit" type="submit"><span>Create Super Admin</span>${ICONS.arrowRight}</button>
       </form>`;
   }
 
   function loginForm() {
     return `
-      <h2>Welcome back</h2>
-      <p>Sign in using your email address and password. New users must use the temporary password supplied by their administrator.</p>
-      <form id="login-form">
-        <div class="form-group"><label>Email Address</label><input name="email" type="email" required placeholder="name@company.com" autocomplete="username"></div>
-        <div class="form-group"><label>Password</label><input name="password" type="password" required placeholder="Enter password" autocomplete="current-password"></div>
-        <div class="auth-note">Forgot your password? Contact your Super Admin or Manager for a temporary password reset.</div>
-        <button class="btn btn-primary btn-lg w-100" type="submit">Sign in</button>
+      <div class="auth-card-heading"><span class="auth-card-icon">${ICONS.lock}</span><div><span class="eyebrow dark">Welcome to Profile Solutions</span><h2>Sign in to your ERP</h2><p>Use your company email and password to continue.</p></div></div>
+      <form id="login-form" class="auth-form">
+        <div class="form-group"><label for="login-email">Email Address</label><div class="input-shell"><span>${ICONS.mail}</span><input id="login-email" name="email" type="email" required placeholder="name@profile-solution.com" autocomplete="username"></div></div>
+        <div class="form-group"><div class="label-row"><label for="login-password">Password</label><button type="button" class="auth-link" id="forgot-password-help">Forgot Password?</button></div><div class="input-shell"><span>${ICONS.lock}</span><input id="login-password" name="password" type="password" required placeholder="Enter your password" autocomplete="current-password"></div></div>
+        <button class="btn btn-primary btn-lg w-100 auth-submit" type="submit"><span>Sign In</span>${ICONS.arrowRight}</button>
+        <div class="auth-note">New users should sign in with the temporary password supplied by their Super Admin or Manager.</div>
       </form>`;
   }
 
   function renderSetPassword() {
     document.getElementById('app').innerHTML = `
       <div class="auth-shell">
-        <section class="auth-visual"><div class="brand-lockup"><div class="brand-mark">ERP</div><div><h1>${esc(state.settings.companyName)}</h1><p>Required Password Change</p></div></div><div class="auth-hero"><h2>Create your private password.</h2><p>Your administrator supplied a temporary password. Replace it now before accessing the ERP.</p></div><div class="auth-foot">The new password is securely hashed and stored by Supabase Auth.</div></section>
-        <section class="auth-panel"><div class="auth-card">
-          <h2>Change Temporary Password</h2>
-          <p>${esc(authSession?.user?.email || '')}</p>
-          <form id="set-password-form">
-            <div class="form-group"><label>New Password</label><input name="password" type="password" required minlength="10" autocomplete="new-password"></div>
-            <div class="form-group"><label>Confirm Password</label><input name="confirm" type="password" required minlength="10" autocomplete="new-password"></div>
+        <section class="auth-visual password-visual">
+          <div class="auth-photo-layer" aria-hidden="true"></div><div class="auth-overlay" aria-hidden="true"></div>
+          <div class="auth-brand-row"><div class="auth-logo-panel">${brandLogo('auth-brand-logo')}</div><span class="auth-brand-chip">Secure Password Setup</span></div>
+          <div class="auth-hero"><span class="eyebrow"><i></i> First login security</span><h2>Create your private<br><em>ERP password.</em></h2><p>Your temporary password has completed its purpose. Replace it now before accessing operational data.</p></div>
+          <div class="auth-foot"><span>Profile Data Center Solutions Pvt. Ltd.</span><span>Secure • Controlled • Traceable</span></div>
+        </section>
+        <section class="auth-panel"><div class="auth-panel-inner"><div class="auth-mobile-brand">${brandLogo('auth-mobile-logo')}</div><div class="auth-card">
+          <div class="auth-card-heading"><span class="auth-card-icon">${ICONS.shield}</span><div><span class="eyebrow dark">Required security step</span><h2>Change Temporary Password</h2><p>${esc(authSession?.user?.email || '')}</p></div></div>
+          <form id="set-password-form" class="auth-form">
+            <div class="form-group"><label for="new-password">New Password</label><div class="input-shell"><span>${ICONS.lock}</span><input id="new-password" name="password" type="password" required minlength="10" autocomplete="new-password" placeholder="Create a strong password"></div></div>
+            <div class="form-group"><label for="confirm-password">Confirm Password</label><div class="input-shell"><span>${ICONS.lock}</span><input id="confirm-password" name="confirm" type="password" required minlength="10" autocomplete="new-password" placeholder="Repeat your new password"></div></div>
             <div class="password-rules">Minimum 10 characters, including uppercase, lowercase, number and special character.</div>
-            <button class="btn btn-primary btn-lg w-100" type="submit">Save New Password</button>
+            <button class="btn btn-primary btn-lg w-100 auth-submit" type="submit"><span>Save New Password</span>${ICONS.arrowRight}</button>
           </form>
-        </div></section>
+        </div><p class="auth-security-note">${ICONS.lock}<span>Your password is securely hashed by Supabase Authentication</span></p></div></section>
       </div>`;
     document.getElementById('set-password-form').addEventListener('submit', completePasswordFlow);
   }
@@ -771,9 +1374,14 @@ tbody tr:hover { background: color-mix(in srgb, var(--primary-soft) 35%, transpa
       } finally { setFormBusy(login, false); }
     });
 
+    document.getElementById('forgot-password-help')?.addEventListener('click', () => {
+      toast('Password assistance', 'Contact your Super Admin or Manager to receive a new temporary password.', 'warning');
+    });
   }
 
   function setFormBusy(form, busy) {
+    form?.classList.toggle('is-busy', busy);
+    form?.setAttribute('aria-busy', String(Boolean(busy)));
     form?.querySelectorAll('button,input,select').forEach(el => { el.disabled = busy; });
   }
 
@@ -869,24 +1477,46 @@ tbody tr:hover { background: color-mix(in srgb, var(--primary-soft) 35%, transpa
     const allowed = NAV.filter(n => n.roles.includes(user.role));
     const groups = [...new Set(allowed.map(n => n.section))];
     const unread = state.notifications.filter(n => n.userId === user.id && !n.read).length;
+    const collapsed = Boolean(state.settings.sidebarCollapsed);
     document.getElementById('app').innerHTML = `
-      <div class="app-shell">
-        <aside class="sidebar" id="sidebar">
-          <div class="brand-area"><div class="brand-mark">ERP</div><div class="brand-copy"><strong>${esc(state.settings.companyName)}</strong><small>${esc(state.settings.factoryName)}</small></div></div>
-          <div class="nav-scroll">
-            ${groups.map(g => `<div class="nav-section-title">${esc(g)}</div>${allowed.filter(n=>n.section===g).map(n=>`<button class="nav-item ${currentRoute===n.id?'active':''}" data-route="${n.id}"><span class="nav-icon">${n.icon}</span><span class="nav-label">${esc(n.label)}</span></button>`).join('')}`).join('')}
+      <div class="app-shell ${collapsed ? 'sidebar-collapsed' : ''}">
+        <aside class="sidebar" id="sidebar" aria-label="ERP navigation">
+          <div class="brand-area">
+            <div class="sidebar-logo-full">${brandLogo('sidebar-logo')}</div>
+            <img class="sidebar-logo-mark" src="${BRAND.mark}" alt="Profile Solutions">
+            <button class="sidebar-collapse-btn" data-action="collapse-sidebar" title="${collapsed ? 'Expand sidebar' : 'Collapse sidebar'}" aria-label="${collapsed ? 'Expand sidebar' : 'Collapse sidebar'}">${ICONS.chevronLeft}</button>
           </div>
+          <div class="factory-chip"><span>${ICONS.factory}</span><div><strong>${esc(state.settings.factoryName)}</strong><small>Manufacturing Operations</small></div></div>
+          <nav class="nav-scroll">
+            ${groups.map(g => `<div class="nav-section-title">${esc(g)}</div>${allowed.filter(n=>n.section===g).map(n=>`<button class="nav-item ${currentRoute===n.id?'active':''}" data-route="${n.id}" title="${esc(n.label)}"><span class="nav-icon">${n.icon}</span><span class="nav-label">${esc(n.label)}</span><span class="nav-active-marker"></span></button>`).join('')}`).join('')}
+          </nav>
           <div class="sidebar-bottom">
-            <div class="user-mini"><div class="avatar">${initials(user.name)}</div><div class="user-info"><strong>${esc(user.name)}</strong><span>${esc(roleLabel(user.role))}</span></div><button class="btn btn-ghost" data-action="logout" title="Logout">${ICONS.logout}</button></div>
+            <div class="user-mini"><div class="avatar">${initials(user.name)}</div><div class="user-info"><strong>${esc(user.name)}</strong><span>${esc(roleLabel(user.role))}</span></div><button class="sidebar-logout" data-action="logout" title="Logout" aria-label="Logout">${ICONS.logout}</button></div>
           </div>
         </aside>
         <header class="topbar">
-          <div class="topbar-left"><button class="icon-btn mobile-menu-btn" data-action="toggle-sidebar">${ICONS.menu}</button><div class="page-heading"><h1 id="top-page-title">Factory Overview</h1><small id="top-page-subtitle">Live operations summary</small></div></div>
-          <div class="topbar-search"><span class="search-icon">${ICONS.search}</span><input id="global-search" placeholder="Search project, job, BOM or item..." autocomplete="off"><div id="global-results"></div></div>
-          <div class="topbar-actions"><button class="icon-btn" data-action="theme" title="Toggle theme">${ICONS.theme}</button><button class="icon-btn" data-action="notifications" title="Notifications">${ICONS.bell}${unread ? `<span class="badge-dot">${unread>9?'9+':unread}</span>`:''}</button></div>
+          <div class="topbar-left">
+            <button class="icon-btn mobile-menu-btn" data-action="toggle-sidebar" aria-label="Open navigation">${ICONS.menu}</button>
+            <div class="topbar-brand"><img src="${BRAND.mark}" alt="Profile Solutions"><span>Profile Solutions</span></div>
+            <span class="topbar-divider"></span>
+            <div class="page-heading"><h1 id="top-page-title">Factory Overview</h1><small id="top-page-subtitle">Live operations summary</small></div>
+          </div>
+          <div class="topbar-search"><span class="search-icon">${ICONS.search}</span><input id="global-search" aria-label="Global ERP search" placeholder="Search project, job, BOM or item..." autocomplete="off"><kbd>Ctrl K</kbd><div id="global-results"></div></div>
+          <div class="topbar-actions">
+            <button class="icon-btn" data-action="theme" title="Toggle theme" aria-label="Toggle theme">${ICONS.theme}</button>
+            <button class="icon-btn" data-action="notifications" title="Notifications" aria-label="Notifications">${ICONS.bell}${unread ? `<span class="badge-dot">${unread>9?'9+':unread}</span>`:''}</button>
+            <div class="profile-control">
+              <button class="profile-trigger" data-action="profile-menu" aria-haspopup="menu" aria-expanded="false"><div class="avatar">${initials(user.name)}</div><div class="profile-trigger-copy"><strong>${esc(user.name)}</strong><span>${esc(roleLabel(user.role))}</span></div>${ICONS.chevronDown}</button>
+              <div class="profile-menu" id="profile-menu" role="menu">
+                <div class="profile-menu-head"><div class="avatar large">${initials(user.name)}</div><div><strong>${esc(user.name)}</strong><span>${esc(user.email || '')}</span><small>${esc(roleLabel(user.role))}</small></div></div>
+                <button role="menuitem" data-action="logout">${ICONS.logout}<span>Sign out</span></button>
+              </div>
+            </div>
+          </div>
         </header>
         <main class="main-content"><div class="content-wrap" id="page-content"></div></main>
-        <aside class="notification-panel" id="notification-panel"><div class="panel-head"><strong>Notifications</strong><div><button class="btn btn-ghost btn-sm" data-action="mark-all-read">Mark all read</button><button class="close-btn" data-action="notifications">×</button></div></div><div class="panel-body" id="notification-list"></div></aside>
+        <aside class="notification-panel" id="notification-panel"><div class="panel-head"><div><span class="eyebrow dark">Activity centre</span><strong>Notifications</strong></div><div><button class="btn btn-ghost btn-sm" data-action="mark-all-read">Mark all read</button><button class="close-btn" data-action="notifications" aria-label="Close notifications">×</button></div></div><div class="panel-body" id="notification-list"></div></aside>
+        <div class="mobile-nav-backdrop" data-action="toggle-sidebar"></div>
       </div>`;
     bindShellEvents();
     renderPage(currentRoute);
@@ -903,6 +1533,10 @@ tbody tr:hover { background: color-mix(in srgb, var(--primary-soft) 35%, transpa
     document.addEventListener('click', globalClickHandler, { once: true });
     document.querySelectorAll('[data-action="logout"]').forEach(btn => btn.addEventListener('click', logout));
     document.querySelectorAll('[data-action="toggle-sidebar"]').forEach(btn => btn.addEventListener('click', () => document.getElementById('sidebar').classList.toggle('open')));
+    document.querySelectorAll('[data-action="collapse-sidebar"]').forEach(btn => btn.addEventListener('click', toggleSidebarCollapse));
+    document.querySelectorAll('[data-action="profile-menu"]').forEach(btn => btn.addEventListener('click', () => {
+      const menu = document.getElementById('profile-menu'); const open = menu?.classList.toggle('open'); btn.setAttribute('aria-expanded', String(Boolean(open)));
+    }));
     document.querySelectorAll('[data-action="theme"]').forEach(btn => btn.addEventListener('click', toggleTheme));
     document.querySelectorAll('[data-action="notifications"]').forEach(btn => btn.addEventListener('click', () => document.getElementById('notification-panel').classList.toggle('open')));
     document.querySelectorAll('[data-action="mark-all-read"]').forEach(btn => btn.addEventListener('click', markAllRead));
@@ -914,11 +1548,21 @@ tbody tr:hover { background: color-mix(in srgb, var(--primary-soft) 35%, transpa
       });
       search.addEventListener('keydown', e => { if (e.key === 'Escape') document.getElementById('global-results').innerHTML = ''; });
     }
+    window.onkeydown = e => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        document.getElementById('global-search')?.focus();
+      }
+    };
   }
 
   function globalClickHandler(e) {
     if (!e.target.closest('.topbar-search')) {
       const r = document.getElementById('global-results'); if (r) r.innerHTML = '';
+    }
+    if (!e.target.closest('.profile-control')) {
+      document.getElementById('profile-menu')?.classList.remove('open');
+      document.querySelector('[data-action="profile-menu"]')?.setAttribute('aria-expanded','false');
     }
     document.addEventListener('click', globalClickHandler, { once: true });
   }
@@ -928,6 +1572,10 @@ tbody tr:hover { background: color-mix(in srgb, var(--primary-soft) 35%, transpa
     saveState();
     await supabaseClient?.auth.signOut();
     authSession = null; currentProfile = null; currentRoute = 'dashboard'; authView = 'login'; render();
+  }
+  function toggleSidebarCollapse() {
+    state.settings.sidebarCollapsed = !state.settings.sidebarCollapsed;
+    saveState(); renderAppShell();
   }
   function toggleTheme() {
     state.settings.theme = state.settings.theme === 'dark' ? 'light' : 'dark'; saveState(); renderAppShell();
@@ -982,7 +1630,7 @@ tbody tr:hover { background: color-mix(in srgb, var(--primary-soft) 35%, transpa
   }
 
   function pageToolbar(title, subtitle, actions = '') {
-    return `<div class="page-toolbar"><div><h2>${esc(title)}</h2><p>${esc(subtitle)}</p></div><div class="toolbar-actions">${actions}</div></div>`;
+    return `<div class="page-toolbar"><div class="page-toolbar-copy"><span class="eyebrow dark"><i></i> Profile Solutions ERP</span><h2>${esc(title)}</h2><p>${esc(subtitle)}</p></div><div class="toolbar-actions">${actions}</div></div>`;
   }
   function emptyState(icon, title, text, action='') {
     return `<div class="empty-state"><div class="empty-icon">${icon}</div><h3>${esc(title)}</h3><p>${esc(text)}</p>${action}</div>`;
@@ -1002,13 +1650,18 @@ tbody tr:hover { background: color-mix(in srgb, var(--primary-soft) 35%, transpa
     const shortages = state.shortages.filter(s => s.status !== 'Resolved' && projects.some(p=>p.id===s.projectId)).length;
     const page = document.getElementById('page-content');
     page.innerHTML = `
-      ${pageToolbar('Factory Overview Dashboard','Monitor production, delivery risk and workflow progress.', `<button class="btn btn-secondary" id="refresh-dashboard">↻ Refresh</button>${can('ADMIN','MANAGER')?'<button class="btn btn-primary" data-go="import">⇧ Import Excel</button>':''}`)}
-      <div class="grid grid-5">
-        ${kpi('▣','Total Projects',projects.length,'All visible projects')}
-        ${kpi('●','Active Projects',active,`${completed} completed`)}
-        ${kpi('⚠','Delayed Projects',delayed,'Requires attention')}
-        ${kpi('∑','Total Quantity',fmtNumber(qty),`${fmtNumber(pending)} pending`)}
-        ${kpi('➜','Ready for Dispatch',fmtNumber(ready),`${shortages} open shortages`)}
+      ${pageToolbar('Factory Overview Dashboard','Monitor production, delivery risk and workflow progress.', `<button class="btn btn-secondary" id="refresh-dashboard">${ICONS.refresh}<span>Refresh</span></button>${can('ADMIN','MANAGER')?`<button class="btn btn-primary" data-go="import">${ICONS.upload}<span>Import Excel</span></button>`:''}`)}
+      <section class="dashboard-hero">
+        <div class="dashboard-hero-media" aria-hidden="true"></div><div class="dashboard-hero-overlay" aria-hidden="true"></div>
+        <div class="dashboard-hero-content"><span class="eyebrow"><i></i> ${esc(roleLabel(getCurrentUser()?.role || ''))} workspace</span><h3>Welcome back, ${esc((getCurrentUser()?.name || 'Team').split(' ')[0])}.</h3><p>Keep Profile Solutions projects moving with a live view of production flow, delivery risk and operational priorities.</p><div class="hero-meta"><span>${ICONS.calendar}${fmtDate(todayISO())}</span><span>${ICONS.factory}${esc(state.settings.factoryName)}</span></div></div>
+        <div class="dashboard-hero-score"><span>Production readiness</span><strong>${qty ? Math.round((ready / qty) * 100) : 0}%</strong><small>${fmtNumber(ready)} of ${fmtNumber(qty)} ready</small></div>
+      </section>
+      <div class="grid grid-5 kpi-grid">
+        ${kpi(ICONS.projects,'Total Projects',projects.length,'All visible projects')}
+        ${kpi(ICONS.check,'Active Projects',active,`${completed} completed`)}
+        ${kpi(ICONS.shortage,'Delayed Projects',delayed,'Requires attention')}
+        ${kpi(ICONS.item,'Total Quantity',fmtNumber(qty),`${fmtNumber(pending)} pending`)}
+        ${kpi(ICONS.ready,'Ready for Dispatch',fmtNumber(ready),`${shortages} open shortages`)}
       </div>
       <div class="grid grid-2" style="margin-top:18px">
         <section class="card"><div class="card-header"><div><h3>Stage-wise Production</h3><p>Items currently positioned at each workflow stage</p></div></div><div class="card-body"><div class="chart-box"><canvas id="stage-chart"></canvas></div></div></section>
@@ -1029,11 +1682,11 @@ tbody tr:hover { background: color-mix(in srgb, var(--primary-soft) 35%, transpa
   function shortStage(stage) { return stage.replace('READY FOR DISPATCH','DISPATCH').replace('POWDER COATING','P.COATING').replace('MRN - STORES','MRN').replace('PRE-COATING','PRE COAT'); }
   function renderRecentActivity() {
     const logs = state.audit.filter(a=>['Production','Projects','Import','Shortages'].includes(a.module)).slice(0,8);
-    return logs.length ? `<div class="activity-list">${logs.map(a=>`<div class="activity-item"><div class="activity-icon">${a.module==='Production'?'⚙':a.module==='Import'?'⇧':a.module==='Shortages'?'⚠':'▣'}</div><div class="activity-main"><strong>${esc(a.action)} • ${esc(a.module)}</strong><span>${esc(a.details)} by ${esc(a.userName)}</span></div><div class="activity-time">${fmtDate(a.createdAt,true)}</div></div>`).join('')}</div>` : emptyState('◷','No recent activity','Activity will appear after records are created or updated.');
+    return logs.length ? `<div class="activity-list">${logs.map(a=>`<div class="activity-item"><div class="activity-icon">${a.module==='Production'?ICONS.production:a.module==='Import'?ICONS.upload:a.module==='Shortages'?ICONS.shortage:ICONS.projects}</div><div class="activity-main"><strong>${esc(a.action)} • ${esc(a.module)}</strong><span>${esc(a.details)} by ${esc(a.userName)}</span></div><div class="activity-time">${fmtDate(a.createdAt,true)}</div></div>`).join('')}</div>` : emptyState(ICONS.clock,'No recent activity','Activity will appear after records are created or updated.');
   }
   function renderUpcomingDeliveries(projects) {
     const list = projects.filter(p=>p.targetDate && projectCompletion(p.id)<100).sort((a,b)=>new Date(a.targetDate)-new Date(b.targetDate)).slice(0,6);
-    return list.length ? `<div class="activity-list">${list.map(p=>{const days=Math.ceil((new Date(p.targetDate)-new Date())/86400000); return `<div class="activity-item"><div class="activity-icon">◎</div><div class="activity-main"><strong>${esc(p.name)}</strong><span>${projectCompletion(p.id)}% complete • ${days<0?Math.abs(days)+' days overdue':days+' days remaining'}</span></div><div class="activity-time">${fmtDate(p.targetDate)}</div></div>`}).join('')}</div>` : emptyState('◎','No upcoming deliveries','Add project target dates to monitor delivery schedules.');
+    return list.length ? `<div class="activity-list">${list.map(p=>{const days=Math.ceil((new Date(p.targetDate)-new Date())/86400000); return `<div class="activity-item"><div class="activity-icon">${ICONS.target}</div><div class="activity-main"><strong>${esc(p.name)}</strong><span>${projectCompletion(p.id)}% complete • ${days<0?Math.abs(days)+' days overdue':days+' days remaining'}</span></div><div class="activity-time">${fmtDate(p.targetDate)}</div></div>`}).join('')}</div>` : emptyState(ICONS.target,'No upcoming deliveries','Add project target dates to monitor delivery schedules.');
   }
 
   function drawBarChart(canvasId, data, options={}) {
@@ -1043,12 +1696,12 @@ tbody tr:hover { background: color-mix(in srgb, var(--primary-soft) 35%, transpa
     const ctx = canvas.getContext('2d'); ctx.scale(dpr,dpr);
     const w=canvas.width/dpr,h=canvas.height/dpr, pad={l:42,r:15,t:20,b:62};
     ctx.clearRect(0,0,w,h);
-    const style=getComputedStyle(document.documentElement), line=style.getPropertyValue('--line').trim(), text=style.getPropertyValue('--muted').trim(), primary=style.getPropertyValue('--primary').trim();
+    const style=getComputedStyle(document.documentElement), line=style.getPropertyValue('--line').trim(), text=style.getPropertyValue('--muted').trim(), primary=style.getPropertyValue('--primary').trim(), primaryStrong=style.getPropertyValue('--primary-strong').trim() || primary;
     const max = options.max || Math.max(1,...data.map(d=>d.value))*1.18;
     ctx.strokeStyle=line;ctx.fillStyle=text;ctx.font='10px system-ui';ctx.textAlign='right';
     for(let i=0;i<=4;i++){const y=pad.t+(h-pad.t-pad.b)*(i/4);ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(w-pad.r,y);ctx.stroke();const v=Math.round(max*(1-i/4));ctx.fillText(v+(options.suffix||''),pad.l-7,y+3);}
     const chartW=w-pad.l-pad.r, gap=8, bw=Math.max(8,(chartW/data.length)-gap);
-    data.forEach((d,i)=>{const x=pad.l+i*(chartW/data.length)+gap/2;const bh=(h-pad.t-pad.b)*(d.value/max);const y=h-pad.b-bh;ctx.fillStyle=primary;roundRect(ctx,x,y,bw,bh,5);ctx.fill();ctx.fillStyle=text;ctx.textAlign='center';ctx.save();ctx.translate(x+bw/2,h-pad.b+10);ctx.rotate(-0.45);ctx.fillText(d.label,0,0);ctx.restore();ctx.fillStyle=style.getPropertyValue('--text').trim();ctx.font='bold 10px system-ui';ctx.fillText(d.value+(options.suffix||''),x+bw/2,y-6);});
+    data.forEach((d,i)=>{const x=pad.l+i*(chartW/data.length)+gap/2;const bh=(h-pad.t-pad.b)*(d.value/max);const y=h-pad.b-bh;const gradient=ctx.createLinearGradient(0,y,0,h-pad.b);gradient.addColorStop(0,primary);gradient.addColorStop(1,primaryStrong);ctx.fillStyle=gradient;ctx.shadowColor='rgba(104,168,40,.18)';ctx.shadowBlur=10;roundRect(ctx,x,y,bw,bh,7);ctx.fill();ctx.shadowBlur=0;ctx.fillStyle=text;ctx.textAlign='center';ctx.save();ctx.translate(x+bw/2,h-pad.b+10);ctx.rotate(-0.45);ctx.fillText(d.label,0,0);ctx.restore();ctx.fillStyle=style.getPropertyValue('--text').trim();ctx.font='bold 10px system-ui';ctx.fillText(d.value+(options.suffix||''),x+bw/2,y-6);});
   }
   function roundRect(ctx,x,y,w,h,r){r=Math.min(r,w/2,h/2);ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
 
@@ -1401,8 +2054,8 @@ tbody tr:hover { background: color-mix(in srgb, var(--primary-soft) 35%, transpa
       <div class="info-banner"><div>🔐</div><div><strong>Authentication is secured by Supabase</strong><p>Passwords are securely hashed by Supabase Auth. Super Admins and authorised Managers create temporary passwords, and users must change them at first login. Operational records continue to use the existing browser-storage workflow.</p></div></div>
       <div class="grid grid-2"><section class="card"><div class="card-header"><div><h3>Company Configuration</h3><p>Branding and display preferences</p></div></div><div class="card-body"><form id="settings-form"><div class="form-group"><label>Company / ERP Name</label><input name="companyName" value="${esc(state.settings.companyName)}"></div><div class="form-group"><label>Factory Name</label><input name="factoryName" value="${esc(state.settings.factoryName)}"></div><div class="setting-row"><div class="setting-copy"><strong>Dark Mode</strong><span>Use dark industrial interface</span></div><button type="button" class="toggle ${state.settings.theme==='dark'?'on':''}" id="settings-theme"></button></div><button class="btn btn-primary" type="submit" style="margin-top:16px">Save Settings</button></form></div></section>
       <section class="card"><div class="card-header"><div><h3>Backup & Restore</h3><p>Protect browser-stored ERP records</p></div></div><div class="card-body"><div class="setting-row"><div class="setting-copy"><strong>Download Full Backup</strong><span>Projects, production history, shortages and settings</span></div><button class="btn btn-secondary" id="download-backup">⇩ Backup</button></div><div class="setting-row"><div class="setting-copy"><strong>Restore Backup</strong><span>Replace current browser data from a JSON file</span></div><button class="btn btn-secondary" id="restore-backup">⇧ Restore</button></div><div class="setting-row"><div class="setting-copy"><strong class="text-danger">Reset All Data</strong><span>Delete all ERP records from this browser</span></div><button class="btn btn-danger" id="reset-data">Reset</button></div></div></section></div>
-      <section class="card" style="margin-top:18px"><div class="card-header"><div><h3>System Information</h3><p>Deployment characteristics</p></div></div><div class="card-body"><div class="grid grid-4">${miniMetric('Technology','HTML / CSS / JS')}${miniMetric('Authentication','Supabase Auth')}${miniMetric('Deployment','Netlify Functions')}${miniMetric('Version','7.0 Temporary Passwords')}</div></div></section>`;
-    document.getElementById('settings-form').onsubmit=e=>{e.preventDefault();const fd=new FormData(e.target);state.settings.companyName=String(fd.get('companyName')||'Factory ERP');state.settings.factoryName=String(fd.get('factoryName')||'Main Manufacturing Unit');audit('UPDATE','Settings','Updated company configuration');saveState();renderAppShell();toast('Settings saved');};document.getElementById('settings-theme').onclick=toggleTheme;document.getElementById('download-backup').onclick=()=>downloadBlob(JSON.stringify(state,null,2),`factory-erp-backup-${todayISO()}.json`,'application/json');document.getElementById('restore-backup').onclick=()=>document.getElementById('backup-file-input').click();const backupInput=document.getElementById('backup-file-input');backupInput.value='';backupInput.onchange=async()=>{try{const data=JSON.parse(await backupInput.files[0].text());if(!data.projects||!data.items)throw new Error('Invalid backup format');if(!confirm('Restore this backup and replace current browser data?'))return;state={...defaultState(),...data,users:state.users};saveState();render();toast('Backup restored','Operational data was restored. Supabase users were not changed.');}catch(e){toast('Restore failed',e.message,'error');}};document.getElementById('reset-data').onclick=()=>{if(!confirm('This permanently deletes all local ERP data. Continue?'))return;if(!confirm('Final confirmation: delete everything?'))return;localStorage.removeItem(STORAGE_KEY);state={...defaultState(),users:state.users};saveState();render();};
+      <section class="card" style="margin-top:18px"><div class="card-header"><div><h3>System Information</h3><p>Deployment characteristics</p></div></div><div class="card-body"><div class="grid grid-4">${miniMetric('Technology','HTML / CSS / JS')}${miniMetric('Authentication','Supabase Auth')}${miniMetric('Deployment','Netlify Functions')}${miniMetric('Version','8.0 Profile Solutions UI')}</div></div></section>`;
+    document.getElementById('settings-form').onsubmit=e=>{e.preventDefault();const fd=new FormData(e.target);state.settings.companyName=String(fd.get('companyName')||BRAND.erpName);state.settings.factoryName=String(fd.get('factoryName')||BRAND.factory);audit('UPDATE','Settings','Updated company configuration');saveState();renderAppShell();toast('Settings saved');};document.getElementById('settings-theme').onclick=toggleTheme;document.getElementById('download-backup').onclick=()=>downloadBlob(JSON.stringify(state,null,2),`factory-erp-backup-${todayISO()}.json`,'application/json');document.getElementById('restore-backup').onclick=()=>document.getElementById('backup-file-input').click();const backupInput=document.getElementById('backup-file-input');backupInput.value='';backupInput.onchange=async()=>{try{const data=JSON.parse(await backupInput.files[0].text());if(!data.projects||!data.items)throw new Error('Invalid backup format');if(!confirm('Restore this backup and replace current browser data?'))return;state={...defaultState(),...data,users:state.users};saveState();render();toast('Backup restored','Operational data was restored. Supabase users were not changed.');}catch(e){toast('Restore failed',e.message,'error');}};document.getElementById('reset-data').onclick=()=>{if(!confirm('This permanently deletes all local ERP data. Continue?'))return;if(!confirm('Final confirmation: delete everything?'))return;localStorage.removeItem(STORAGE_KEY);state={...defaultState(),users:state.users};saveState();render();};
   }
 
   function openModal(title, body, footer='', size='') {
@@ -1415,6 +2068,7 @@ tbody tr:hover { background: color-mix(in srgb, var(--primary-soft) 35%, transpa
 
   initialiseAuthentication();
 })();
+
   </script>
 </body>
 </html>

@@ -1,8 +1,8 @@
 {
-  "name": "factory-erp-supabase-temporary-password",
-  "version": "7.0.0",
+  "name": "profile-solutions-factory-erp",
+  "version": "8.0.0",
   "private": true,
-  "description": "Vanilla Factory ERP with Supabase temporary passwords, forced password change, and Netlify Functions",
+  "description": "Profile Solutions branded Factory ERP with Supabase temporary-password authentication and Netlify Functions",
   "scripts": {
     "check": "node scripts/check.mjs"
   },
