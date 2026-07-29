@@ -1,33 +1,27 @@
-# Validation Report — Profile Solutions UI Version 8
+# Factory ERP v9 Validation Report
 
-## UI/UX implemented
+## Passed static validation
 
-- Profile Solutions branding, local SVG logo and favicon.
-- Official website imagery used as branded login and dashboard backgrounds.
-- Modern Profile Solutions brand-green, navy and neutral colour system.
-- Poppins headings and Inter interface typography with system fallbacks.
-- Redesigned login, one-time Super Admin setup and forced password-change screens.
-- Collapsible enterprise sidebar, active navigation states and consistent SVG icons.
-- Modern header with global search, notifications, profile menu and logout.
-- Executive dashboard hero, modern KPI cards, tables, filters, forms, modals and buttons.
-- Sticky table headers, row hover states, horizontal mobile table scrolling and responsive grids.
-- Subtle transitions, focus-visible states and reduced-motion accessibility support.
-- Desktop, laptop, tablet and mobile breakpoints.
+- Profile Solutions UI remains present.
+- Supabase temporary-password authentication remains present.
+- Netlify Functions configuration remains present.
+- `erp-data.mjs` validates authenticated sessions and ERP roles.
+- `public.erp_records` migration enables RLS and Realtime.
+- Browser writes use the protected server-side Function.
+- Browser reads use authenticated Supabase access.
+- Projects, items, shortages, issues, audit logs and notifications are loaded from Supabase.
+- Realtime Postgres changes trigger automatic data reloads.
+- LocalStorage persists UI preferences only.
+- Legacy business data is migrated once only when the central table is empty.
+- Existing UI, reports, filters, imports, production tracker and role screens remain intact.
+- Supabase secret keys are not present in browser code.
 
-## Functionality preserved
+## Required deployment validation
 
-- Existing Supabase Auth flow and profile database.
-- Temporary password creation and forced first-login password change.
-- Super Admin, Manager and Executive permissions.
-- Netlify Function API actions and environment variables.
-- Projects, Excel import, production tracking, shortage/issues workflow, reports, audit logs and backup.
-- Existing local operational-data storage behaviour.
+After running `003_shared_operational_data.sql` and deploying:
 
-## Technical checks
-
-- Browser JavaScript syntax validation passed.
-- Netlify Function syntax validation passed.
-- Required-file validation passed.
-- Supabase secret-key exposure scan passed.
-- Netlify Function files match Version 7 exactly.
-- Supabase migration files remain unchanged.
+1. `/api/config` returns `sharedDataReady: true`.
+2. `/.netlify/functions/erp-data` does not return a Netlify 404.
+3. A record created in one browser appears in another browser.
+4. A stage update appears automatically for another signed-in user.
+5. A Super Admin deletion disappears for all signed-in users.

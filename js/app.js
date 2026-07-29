@@ -1,9 +1,19 @@
 (() => {
   'use strict';
 
-  const STORAGE_KEY = 'factoryERP_vanilla_v5_executive_stage';
-  const LEGACY_STORAGE_KEYS = ['factoryERP_vanilla_v1', 'factoryERP_vanilla_v2', 'factoryERP_vanilla_v3_production', 'factoryERP_vanilla_v4_operations'];
-  LEGACY_STORAGE_KEYS.forEach(key => localStorage.removeItem(key));
+  const UI_STORAGE_KEY = 'factoryERP_ui_v9';
+  const LEGACY_STORAGE_KEYS = [
+    'factoryERP_vanilla_v5_executive_stage',
+    'factoryERP_vanilla_v1',
+    'factoryERP_vanilla_v2',
+    'factoryERP_vanilla_v3_production',
+    'factoryERP_vanilla_v4_operations'
+  ];
+  const BUSINESS_COLLECTIONS = ['projects', 'items', 'shortages', 'issues', 'audit', 'notifications'];
+  const ENTITY_TYPES = Object.freeze({
+    projects: 'projects', items: 'items', shortages: 'shortages', issues: 'issues', audit: 'audit', notifications: 'notifications'
+  });
+  let legacyBusinessSnapshot = null;
   const STAGES = [
     'PLANNING', 'MRN - STORES', 'CUTTING', 'FABRICATION', 'GRINDING',
     'PRE-COATING', 'POWDER COATING', 'ASSEMBLY', 'READY FOR DISPATCH'
@@ -111,10 +121,21 @@
   let passwordFlow = '';
   let importBuffer = null;
   let globalSearchTimer = null;
+  let operationalDataReady = false;
+  let applyingRemoteData = false;
+  let lastSyncedBusiness = null;
+  let syncTimer = null;
+  let syncInFlight = false;
+  let syncRequestedWhileBusy = false;
+  let syncRetryTimer = null;
+  let realtimeChannel = null;
+  let realtimeReloadTimer = null;
+  let operationalLoadPromise = null;
+  let remoteReloadPending = false;
 
   function defaultState() {
     return {
-      version: 6,
+      version: 9,
       settings: {
         companyName: 'Profile Solutions ERP',
         factoryName: 'Wada Manufacturing Unit',
@@ -134,20 +155,43 @@
   }
 
   function loadState() {
+    const base = defaultState();
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      const loaded = raw ? { ...defaultState(), ...JSON.parse(raw) } : defaultState();
-      loaded.users = (loaded.users || []).map(({ password, ...user }) => user);
-      return loaded;
-    } catch (e) {
-      console.error('State load failed', e);
-      return defaultState();
+      const uiRaw = localStorage.getItem(UI_STORAGE_KEY);
+      if (uiRaw) {
+        const ui = JSON.parse(uiRaw);
+        base.settings = { ...base.settings, ...(ui.settings || {}) };
+      }
+    } catch (error) {
+      console.warn('UI preference load failed', error);
     }
+
+    for (const key of LEGACY_STORAGE_KEYS) {
+      try {
+        const raw = localStorage.getItem(key);
+        if (!raw) continue;
+        const parsed = JSON.parse(raw);
+        const hasBusinessData = BUSINESS_COLLECTIONS.some(name => Array.isArray(parsed?.[name]) && parsed[name].length > 0);
+        if (hasBusinessData && !legacyBusinessSnapshot) {
+          legacyBusinessSnapshot = Object.fromEntries(BUSINESS_COLLECTIONS.map(name => [name, Array.isArray(parsed[name]) ? parsed[name] : []]));
+        }
+        if (!localStorage.getItem(UI_STORAGE_KEY) && parsed?.settings) {
+          base.settings = { ...base.settings, ...parsed.settings };
+        }
+      } catch (error) {
+        console.warn(`Legacy ERP data could not be read from ${key}`, error);
+      }
+    }
+    return base;
+  }
+
+  function saveUiPreferences() {
+    localStorage.setItem(UI_STORAGE_KEY, JSON.stringify({ settings: state.settings }));
   }
 
   function saveState() {
-    const safeState = { ...state, users: (state.users || []).map(({ password, ...user }) => user) };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(safeState));
+    saveUiPreferences();
+    if (operationalDataReady && !applyingRemoteData && authSession) queueOperationalSync();
   }
 
   function uid(prefix = 'ID') {
@@ -388,6 +432,7 @@
         if (error) throw error;
         authSession = data.session;
         await syncProfiles();
+        await initialiseOperationalData();
         currentRoute = 'dashboard';
         authMessage = '';
         render();
@@ -411,6 +456,7 @@
           passwordFlow = 'forced'; authView = 'set-password'; authMessage = ''; render();
           return;
         }
+        await initialiseOperationalData();
         currentRoute = 'dashboard'; authMessage = ''; render();
         audit('LOGIN', 'Authentication', 'User signed in', currentProfile.id); saveState();
       } catch (err) {
@@ -459,6 +505,257 @@
     return body;
   }
 
+  async function callDataApi(action, payload = {}) {
+    const token = authSession?.access_token;
+    if (!token) throw new Error('Your session has expired. Sign in again.');
+    const response = await fetch('/api/erp-data', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ action, ...payload })
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.error || 'Shared database request failed.');
+    return body;
+  }
+
+  function cloneJson(value) {
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function canonicalJson(value) {
+    if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+    if (value && typeof value === 'object') {
+      return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
+    }
+    return JSON.stringify(value);
+  }
+
+  function emptyBusinessState() {
+    return Object.fromEntries(BUSINESS_COLLECTIONS.map(name => [name, []]));
+  }
+
+  function extractBusinessState(source = state) {
+    return Object.fromEntries(BUSINESS_COLLECTIONS.map(name => [name, cloneJson(Array.isArray(source[name]) ? source[name] : [])]));
+  }
+
+  function businessRecordCount(snapshot = extractBusinessState()) {
+    return BUSINESS_COLLECTIONS.reduce((total, name) => total + (snapshot[name]?.length || 0), 0);
+  }
+
+  function sortBusinessCollection(name, records) {
+    const rows = [...records];
+    const time = record => new Date(record?.createdAt || record?.updatedAt || 0).getTime() || 0;
+    if (name === 'audit' || name === 'notifications') return rows.sort((a, b) => time(b) - time(a));
+    return rows.sort((a, b) => time(a) - time(b));
+  }
+
+  function diffBusinessState(previous, current) {
+    const changes = {};
+    for (const name of BUSINESS_COLLECTIONS) {
+      const oldRows = Array.isArray(previous?.[name]) ? previous[name] : [];
+      const newRows = Array.isArray(current?.[name]) ? current[name] : [];
+      const oldMap = new Map(oldRows.filter(row => row?.id).map(row => [String(row.id), row]));
+      const newMap = new Map(newRows.filter(row => row?.id).map(row => [String(row.id), row]));
+      const upsert = [];
+      const remove = [];
+      for (const [id, row] of newMap) {
+        const old = oldMap.get(id);
+        if (!old || canonicalJson(old) !== canonicalJson(row)) upsert.push(row);
+      }
+      for (const id of oldMap.keys()) if (!newMap.has(id)) remove.push(id);
+      if (upsert.length || remove.length) changes[name] = { upsert, delete: remove };
+    }
+    return changes;
+  }
+
+  function hasOperationalChanges(changes) {
+    return Object.values(changes || {}).some(change => (change.upsert?.length || 0) + (change.delete?.length || 0) > 0);
+  }
+
+  function splitOperationalChanges(changes, maxRecords = 150, maxBytes = 3500000) {
+    const operations = [];
+    for (const [entity, change] of Object.entries(changes || {})) {
+      (change.upsert || []).forEach(record => operations.push({ entity, kind: 'upsert', value: record }));
+      (change.delete || []).forEach(id => operations.push({ entity, kind: 'delete', value: id }));
+    }
+    const batches = [];
+    let batch = {};
+    let count = 0;
+    let bytes = 0;
+    const pushBatch = () => {
+      if (count) batches.push(batch);
+      batch = {}; count = 0; bytes = 0;
+    };
+    for (const operation of operations) {
+      const operationBytes = JSON.stringify(operation.value).length + 120;
+      if (count && (count >= maxRecords || bytes + operationBytes > maxBytes)) pushBatch();
+      batch[operation.entity] ||= { upsert: [], delete: [] };
+      batch[operation.entity][operation.kind].push(operation.value);
+      count += 1;
+      bytes += operationBytes;
+    }
+    pushBatch();
+    return batches;
+  }
+
+  async function sendOperationalChanges(changes) {
+    for (const batch of splitOperationalChanges(changes)) {
+      await callDataApi('sync', { changes: batch });
+    }
+  }
+
+  function queueOperationalSync(delay = 60) {
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(flushOperationalSync, delay);
+  }
+
+  async function flushOperationalSync() {
+    clearTimeout(syncTimer);
+    if (!operationalDataReady || applyingRemoteData || !authSession) return;
+    if (syncInFlight) {
+      syncRequestedWhileBusy = true;
+      return;
+    }
+    const snapshot = extractBusinessState();
+    const changes = diffBusinessState(lastSyncedBusiness || emptyBusinessState(), snapshot);
+    if (!hasOperationalChanges(changes)) return;
+
+    syncInFlight = true;
+    syncRequestedWhileBusy = false;
+    clearTimeout(syncRetryTimer);
+    try {
+      await sendOperationalChanges(changes);
+      lastSyncedBusiness = cloneJson(snapshot);
+    } catch (error) {
+      console.error('Shared database sync failed', error);
+      toast('Database sync failed', `${error.message} Your changes remain on screen and will be retried automatically.`, 'error');
+      syncRetryTimer = setTimeout(() => queueOperationalSync(0), 5000);
+    } finally {
+      syncInFlight = false;
+      if (syncRequestedWhileBusy) queueOperationalSync(20);
+      if (remoteReloadPending) {
+        remoteReloadPending = false;
+        scheduleOperationalReload();
+      }
+    }
+  }
+
+  async function fetchAllOperationalRows() {
+    const rows = [];
+    const pageSize = 1000;
+    for (let from = 0; ; from += pageSize) {
+      const { data, error } = await supabaseClient
+        .from('erp_records')
+        .select('entity_type,record_id,payload,updated_at')
+        .order('entity_type', { ascending: true })
+        .order('record_id', { ascending: true })
+        .range(from, from + pageSize - 1);
+      if (error) {
+        if (/erp_records|does not exist|schema cache/i.test(error.message || '')) {
+          throw new Error('The shared ERP database migration has not been installed. Run supabase/003_shared_operational_data.sql in Supabase SQL Editor.');
+        }
+        throw error;
+      }
+      rows.push(...(data || []));
+      if (!data || data.length < pageSize) break;
+    }
+    return rows;
+  }
+
+  async function loadOperationalData({ renderAfter = false } = {}) {
+    if (!supabaseClient || !authSession) return;
+    if (operationalLoadPromise) return operationalLoadPromise;
+    operationalLoadPromise = (async () => {
+      const rows = await fetchAllOperationalRows();
+      const next = emptyBusinessState();
+      for (const row of rows) {
+        const name = String(row.entity_type || '');
+        if (!BUSINESS_COLLECTIONS.includes(name) || !row.payload || typeof row.payload !== 'object') continue;
+        const record = { ...row.payload, id: String(row.record_id || row.payload.id || '') };
+        if (record.id) next[name].push(record);
+      }
+      applyingRemoteData = true;
+      try {
+        for (const name of BUSINESS_COLLECTIONS) state[name] = sortBusinessCollection(name, next[name]);
+        lastSyncedBusiness = extractBusinessState();
+        operationalDataReady = true;
+      } finally {
+        applyingRemoteData = false;
+      }
+      if (renderAfter && authSession && currentProfile && authView !== 'set-password') renderAppShell();
+      return rows.length;
+    })();
+    try { return await operationalLoadPromise; }
+    finally { operationalLoadPromise = null; }
+  }
+
+  function flattenLegacySnapshot(snapshot) {
+    const records = [];
+    for (const name of BUSINESS_COLLECTIONS) {
+      for (const record of snapshot?.[name] || []) {
+        if (record?.id) records.push({ entityType: name, recordId: String(record.id), payload: record });
+      }
+    }
+    return records;
+  }
+
+  function clearLegacyBusinessStorage() {
+    LEGACY_STORAGE_KEYS.forEach(key => localStorage.removeItem(key));
+    legacyBusinessSnapshot = null;
+    saveUiPreferences();
+  }
+
+  async function initialiseOperationalData() {
+    operationalDataReady = false;
+    const existingCount = await loadOperationalData();
+    const legacyCount = legacyBusinessSnapshot ? businessRecordCount(legacyBusinessSnapshot) : 0;
+    if (existingCount === 0 && legacyCount > 0 && can('ADMIN', 'MANAGER')) {
+      await callDataApi('seed-if-empty', { records: flattenLegacySnapshot(legacyBusinessSnapshot) });
+      await loadOperationalData();
+      clearLegacyBusinessStorage();
+      toast('Shared database activated', `${legacyCount} existing browser records were moved to Supabase.`);
+    } else if (existingCount > 0 || legacyCount === 0) {
+      clearLegacyBusinessStorage();
+    }
+    subscribeOperationalRealtime();
+  }
+
+  function scheduleOperationalReload() {
+    clearTimeout(realtimeReloadTimer);
+    realtimeReloadTimer = setTimeout(async () => {
+      if (!authSession || !operationalDataReady) return;
+      if (syncInFlight) {
+        remoteReloadPending = true;
+        return;
+      }
+      try { await loadOperationalData({ renderAfter: true }); }
+      catch (error) { console.error('Realtime reload failed', error); }
+    }, 350);
+  }
+
+  function subscribeOperationalRealtime() {
+    if (!supabaseClient || !authSession) return;
+    if (realtimeChannel) supabaseClient.removeChannel(realtimeChannel);
+    realtimeChannel = supabaseClient
+      .channel(`erp-records-${authSession.user.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'erp_records' }, () => scheduleOperationalReload())
+      .subscribe(status => {
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          console.warn('Supabase Realtime channel status:', status);
+        }
+      });
+  }
+
+  function stopOperationalRealtime() {
+    clearTimeout(realtimeReloadTimer);
+    clearTimeout(syncTimer);
+    clearTimeout(syncRetryTimer);
+    if (realtimeChannel && supabaseClient) supabaseClient.removeChannel(realtimeChannel);
+    realtimeChannel = null;
+    operationalDataReady = false;
+    lastSyncedBusiness = null;
+  }
+
   async function syncProfiles() {
     if (!supabaseClient || !authSession) return;
     const { data, error } = await supabaseClient.from('profiles').select('id,full_name,email,role,status,must_change_password,created_by,invited_at,activated_at,created_at').order('created_at', { ascending: true });
@@ -477,6 +774,7 @@
       const config = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(config.error || 'Supabase configuration is unavailable.');
       appConfig = config; setupRequired = Boolean(config.setupRequired);
+      if (config.sharedDataReady === false) throw new Error('Shared ERP database is not ready. Run supabase/003_shared_operational_data.sql in Supabase SQL Editor.');
       if (!window.supabase?.createClient) throw new Error('Supabase client library did not load. Check the internet connection.');
       supabaseClient = window.supabase.createClient(config.supabaseUrl, config.supabasePublishableKey, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
       const { data, error } = await supabaseClient.auth.getSession();
@@ -490,6 +788,8 @@
           authMessage = 'ERROR:This account is not active. Contact the Super Admin.';
         } else if (currentProfile?.mustChangePassword) {
           passwordFlow = 'forced'; authView = 'set-password';
+        } else {
+          await initialiseOperationalData();
         }
       }
       authInitialized = true;
@@ -505,9 +805,14 @@
                 authMessage = 'ERROR:This account is not active. Contact the Super Admin.';
               } else if (currentProfile?.mustChangePassword) {
                 passwordFlow = 'forced'; authView = 'set-password';
+              } else if (!operationalDataReady) {
+                await initialiseOperationalData();
               }
             } catch (error) { console.error('Profile sync failed', error); }
-          } else currentProfile = null;
+          } else {
+            currentProfile = null;
+            stopOperationalRealtime();
+          }
           if (authInitialized) render();
         }, 0);
       });
@@ -615,6 +920,8 @@
   async function logout() {
     audit('LOGOUT', 'Authentication', 'User signed out', getCurrentUser()?.id);
     saveState();
+    await flushOperationalSync();
+    stopOperationalRealtime();
     await supabaseClient?.auth.signOut();
     authSession = null; currentProfile = null; currentRoute = 'dashboard'; authView = 'login'; render();
   }
@@ -885,7 +1192,7 @@
   function openStageUpdate(item) {
     if(!requireRole('ADMIN','MANAGER','EXECUTIVE'))return;
     if(!canUpdateItemStage(item))return toast('Access denied','You must be logged in to update a production stage.','error');
-    openModal(`Update: ${STAGES[item.currentStage]}`,`<form id="stage-form"><div class="form-group"><label>Status</label><select name="status"><option>In Progress</option><option>Delayed</option><option>On Hold</option></select></div><div class="form-group"><label>Remarks *</label><textarea name="remarks" required placeholder="Describe work completed, issue or delay reason"></textarea></div><div class="form-group"><label>Images / documents</label><input id="stage-files" type="file" multiple accept="image/*,.pdf,.doc,.docx,.xls,.xlsx"><div class="help-text">For static browser storage, files up to 500 KB each can be saved. Larger files are recorded by name only.</div></div></form>`,`<button class="btn btn-secondary" data-close-modal>Cancel</button><button class="btn btn-primary" id="submit-stage">Submit Update</button>`);
+    openModal(`Update: ${STAGES[item.currentStage]}`,`<form id="stage-form"><div class="form-group"><label>Status</label><select name="status"><option>In Progress</option><option>Delayed</option><option>On Hold</option></select></div><div class="form-group"><label>Remarks *</label><textarea name="remarks" required placeholder="Describe work completed, issue or delay reason"></textarea></div><div class="form-group"><label>Images / documents</label><input id="stage-files" type="file" multiple accept="image/*,.pdf,.doc,.docx,.xls,.xlsx"><div class="help-text">Files up to 500 KB each are stored with the synchronized production record. Larger files are recorded by name only.</div></div></form>`,`<button class="btn btn-secondary" data-close-modal>Cancel</button><button class="btn btn-primary" id="submit-stage">Submit Update</button>`);
     document.getElementById('submit-stage').onclick=async()=>{const f=document.getElementById('stage-form');if(!f.reportValidity())return;const fd=new FormData(f),status=String(fd.get('status')),remarks=String(fd.get('remarks')),files=[...document.getElementById('stage-files').files],attachments=[];for(const file of files.slice(0,4)){attachments.push({id:uid('FIL'),name:file.name,type:file.type,size:file.size,data:file.size<=512000?await fileToDataURL(file):null});}item.status=status;item.updatedAt=nowISO();item.history.push(historyEvent(item,'Stage Updated',status,remarks,attachments));if(status==='In Progress'){if(can('EXECUTIVE')){item.approvalStatus='SUBMITTED';const p=projectById(item.projectId);if(p?.managerId)notify(p.managerId,'Stage completion submitted',`${item.itemName} is waiting for approval at ${STAGES[item.currentStage]}.`,'Approval',item.id);}else{item.approvalStatus='SUBMITTED';}}else if(status==='Delayed'){const p=projectById(item.projectId);if(p?.managerId)notify(p.managerId,'Production delay reported',`${item.itemName} is delayed at ${STAGES[item.currentStage]}.`,'Delay',item.id);}audit('UPDATE','Production',`Updated ${item.itemName} at ${STAGES[item.currentStage]}`,item.id);saveState();closeModal();openItemDetail(item.id);toast(item.approvalStatus==='SUBMITTED'?'Submitted for approval':'Stage updated','Production history has been recorded.');};
   }
   function approveStage(item){item.history.push(historyEvent(item,'Stage Approved','Approved','Stage completion approved by manager.'));item.approvalStatus='';if(item.currentStage<8){item.currentStage+=1;item.currentStageName=STAGES[item.currentStage];item.status='In Progress';item.history.push(historyEvent(item,'Stage Started','In Progress','Next production stage started.'));}else item.status='Completed';item.updatedAt=nowISO();const p=projectById(item.projectId);(p?.executiveIds||[]).forEach(id=>notify(id,'Stage approved',`${item.itemName} has been approved and moved to ${STAGES[item.currentStage]}.`,'Approval',item.id));audit('APPROVE','Production',`Approved stage for ${item.itemName}`,item.id);saveState();closeModal();renderProduction();toast('Stage approved',item.status==='Completed'?'Item completed.':`Moved to ${STAGES[item.currentStage]}.`);}
@@ -1096,11 +1403,11 @@
   function renderSettings() {
     setPageTitle('Settings & Backup','Configuration and operational data protection');
     const page=document.getElementById('page-content');page.innerHTML=`${pageToolbar('System Settings','Configure the ERP and manage operational data backups.')}
-      <div class="info-banner"><div>🔐</div><div><strong>Authentication is secured by Supabase</strong><p>Passwords are securely hashed by Supabase Auth. Super Admins and authorised Managers create temporary passwords, and users must change them at first login. Operational records continue to use the existing browser-storage workflow.</p></div></div>
+      <div class="info-banner"><div>🔐</div><div><strong>Authentication is secured by Supabase</strong><p>Passwords are securely hashed by Supabase Auth. Super Admins and authorised Managers create temporary passwords, and users must change them at first login. Projects, production records, shortages, issues, audit entries and notifications are stored in the shared Supabase database and synchronized across authorized users.</p></div></div>
       <div class="grid grid-2"><section class="card"><div class="card-header"><div><h3>Company Configuration</h3><p>Branding and display preferences</p></div></div><div class="card-body"><form id="settings-form"><div class="form-group"><label>Company / ERP Name</label><input name="companyName" value="${esc(state.settings.companyName)}"></div><div class="form-group"><label>Factory Name</label><input name="factoryName" value="${esc(state.settings.factoryName)}"></div><div class="setting-row"><div class="setting-copy"><strong>Dark Mode</strong><span>Use dark industrial interface</span></div><button type="button" class="toggle ${state.settings.theme==='dark'?'on':''}" id="settings-theme"></button></div><button class="btn btn-primary" type="submit" style="margin-top:16px">Save Settings</button></form></div></section>
-      <section class="card"><div class="card-header"><div><h3>Backup & Restore</h3><p>Protect browser-stored ERP records</p></div></div><div class="card-body"><div class="setting-row"><div class="setting-copy"><strong>Download Full Backup</strong><span>Projects, production history, shortages and settings</span></div><button class="btn btn-secondary" id="download-backup">⇩ Backup</button></div><div class="setting-row"><div class="setting-copy"><strong>Restore Backup</strong><span>Replace current browser data from a JSON file</span></div><button class="btn btn-secondary" id="restore-backup">⇧ Restore</button></div><div class="setting-row"><div class="setting-copy"><strong class="text-danger">Reset All Data</strong><span>Delete all ERP records from this browser</span></div><button class="btn btn-danger" id="reset-data">Reset</button></div></div></section></div>
-      <section class="card" style="margin-top:18px"><div class="card-header"><div><h3>System Information</h3><p>Deployment characteristics</p></div></div><div class="card-body"><div class="grid grid-4">${miniMetric('Technology','HTML / CSS / JS')}${miniMetric('Authentication','Supabase Auth')}${miniMetric('Deployment','Netlify Functions')}${miniMetric('Version','8.0 Profile Solutions UI')}</div></div></section>`;
-    document.getElementById('settings-form').onsubmit=e=>{e.preventDefault();const fd=new FormData(e.target);state.settings.companyName=String(fd.get('companyName')||BRAND.erpName);state.settings.factoryName=String(fd.get('factoryName')||BRAND.factory);audit('UPDATE','Settings','Updated company configuration');saveState();renderAppShell();toast('Settings saved');};document.getElementById('settings-theme').onclick=toggleTheme;document.getElementById('download-backup').onclick=()=>downloadBlob(JSON.stringify(state,null,2),`factory-erp-backup-${todayISO()}.json`,'application/json');document.getElementById('restore-backup').onclick=()=>document.getElementById('backup-file-input').click();const backupInput=document.getElementById('backup-file-input');backupInput.value='';backupInput.onchange=async()=>{try{const data=JSON.parse(await backupInput.files[0].text());if(!data.projects||!data.items)throw new Error('Invalid backup format');if(!confirm('Restore this backup and replace current browser data?'))return;state={...defaultState(),...data,users:state.users};saveState();render();toast('Backup restored','Operational data was restored. Supabase users were not changed.');}catch(e){toast('Restore failed',e.message,'error');}};document.getElementById('reset-data').onclick=()=>{if(!confirm('This permanently deletes all local ERP data. Continue?'))return;if(!confirm('Final confirmation: delete everything?'))return;localStorage.removeItem(STORAGE_KEY);state={...defaultState(),users:state.users};saveState();render();};
+      <section class="card"><div class="card-header"><div><h3>Backup & Restore</h3><p>Protect shared ERP records</p></div></div><div class="card-body"><div class="setting-row"><div class="setting-copy"><strong>Download Full Backup</strong><span>Projects, production history, shortages and settings</span></div><button class="btn btn-secondary" id="download-backup">⇩ Backup</button></div><div class="setting-row"><div class="setting-copy"><strong>Restore Backup</strong><span>Replace shared operational data from a JSON backup</span></div><button class="btn btn-secondary" id="restore-backup">⇧ Restore</button></div><div class="setting-row"><div class="setting-copy"><strong class="text-danger">Reset All Data</strong><span>Delete all shared ERP operational records</span></div><button class="btn btn-danger" id="reset-data">Reset</button></div></div></section></div>
+      <section class="card" style="margin-top:18px"><div class="card-header"><div><h3>System Information</h3><p>Deployment characteristics</p></div></div><div class="card-body"><div class="grid grid-4">${miniMetric('Technology','HTML / CSS / JS')}${miniMetric('Authentication','Supabase Auth')}${miniMetric('Deployment','Netlify Functions')}${miniMetric('Version','9.0 Shared Data')}</div></div></section>`;
+    document.getElementById('settings-form').onsubmit=e=>{e.preventDefault();const fd=new FormData(e.target);state.settings.companyName=String(fd.get('companyName')||BRAND.erpName);state.settings.factoryName=String(fd.get('factoryName')||BRAND.factory);audit('UPDATE','Settings','Updated company configuration');saveState();renderAppShell();toast('Settings saved');};document.getElementById('settings-theme').onclick=toggleTheme;document.getElementById('download-backup').onclick=()=>downloadBlob(JSON.stringify(state,null,2),`factory-erp-backup-${todayISO()}.json`,'application/json');document.getElementById('restore-backup').onclick=()=>document.getElementById('backup-file-input').click();const backupInput=document.getElementById('backup-file-input');backupInput.value='';backupInput.onchange=async()=>{try{const data=JSON.parse(await backupInput.files[0].text());if(!data.projects||!data.items)throw new Error('Invalid backup format');if(!confirm('Restore this backup and replace shared ERP data for every user?'))return;state={...defaultState(),...data,users:state.users};saveState();render();toast('Backup restored','Shared operational data was restored. Supabase users were not changed.');}catch(e){toast('Restore failed',e.message,'error');}};document.getElementById('reset-data').onclick=()=>{if(!confirm('This permanently deletes shared ERP operational data for every user. Continue?'))return;if(!confirm('Final confirmation: delete everything?'))return;state={...defaultState(),settings:state.settings,users:state.users};saveState();render();};
   }
 
   function openModal(title, body, footer='', size='') {

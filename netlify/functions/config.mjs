@@ -24,6 +24,17 @@ async function hasAnyProfile(url, secretKey) {
   return Array.isArray(rows) && rows.length > 0;
 }
 
+async function hasSharedDataTable(url, secretKey) {
+  const response = await fetch(`${url}/rest/v1/erp_records?select=record_id&limit=1`, {
+    headers: {
+      apikey: secretKey,
+      Authorization: `Bearer ${secretKey}`,
+      Accept: 'application/json',
+    },
+  });
+  return response.ok;
+}
+
 export default async () => {
   try {
     const supabaseUrl = env('SUPABASE_URL').replace(/\/$/, '');
@@ -36,11 +47,15 @@ export default async () => {
     }
 
     const setupRequired = !(await hasAnyProfile(supabaseUrl, secretKey));
+    const sharedDataReady = await hasSharedDataTable(supabaseUrl, secretKey);
     return new Response(JSON.stringify({
       supabaseUrl,
       supabasePublishableKey: publishableKey,
       setupRequired,
       authenticationMode: 'temporary-password',
+      dataStorage: 'supabase-postgresql',
+      realtimeMode: 'postgres-changes',
+      sharedDataReady,
     }), { status: 200, headers: JSON_HEADERS });
   } catch (error) {
     return new Response(JSON.stringify({ error: error.message || 'Configuration failed.' }), {
