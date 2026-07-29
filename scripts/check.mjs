@@ -31,10 +31,19 @@ if (!js.includes('Change Temporary Password') || !js.includes('Create New User')
 if (!js.includes('Profile Solutions') || !js.includes('sidebar-collapsed')) throw new Error('Profile Solutions application shell is missing.');
 if (!css.includes('Profile Solutions Enterprise UI') || !css.includes('.dashboard-hero') || !css.includes('.auth-shell')) throw new Error('Version 8 UI stylesheet is incomplete.');
 if (!fn.includes("action === 'create'") || !fn.includes("action === 'reset-password'") || !fn.includes("action === 'change-own-password'")) throw new Error('Temporary-password Function actions are missing.');
-if (!dataFn.includes("action === 'sync'") || !dataFn.includes("action === 'seed-if-empty'")) throw new Error('Shared operational data Function actions are missing.');
+if (!dataFn.includes("action === 'sync'") || !dataFn.includes("action === 'seed-if-empty'") || !dataFn.includes("action === 'bulk-import'")) throw new Error('Shared operational data Function actions are missing.');
 if (!migration.includes('create table if not exists public.erp_records') || !migration.includes('supabase_realtime')) throw new Error('Shared operational data migration is incomplete.');
 if (!js.includes("from('erp_records')") || !js.includes('postgres_changes') || !js.includes('queueOperationalSync')) throw new Error('Realtime shared-data client is missing.');
+if (!html.includes('id="excel-file-input"') || !js.includes('ensureImportInput')) throw new Error('Excel file input is missing.');
+if (!js.includes("callDataApi('bulk-import'") || !js.includes('async function confirmImport')) throw new Error('Database-backed bulk import workflow is missing.');
+if (!js.includes('blankOptionalExcelValue') || !js.includes('parseQuantityCell')) throw new Error('Excel zero/date/quantity validation fix is missing.');
+if (!dataFn.includes('upsertMixedImportChunk') || !dataFn.includes('normalizeBulkImportRecords')) throw new Error('Bulk import server validation is missing.');
+if (dataFn.includes('Executives cannot create production items.')) throw new Error('Outdated Executive production-item creation blocker is still present.');
+if (!/MANAGER:\s*new Set\(\['items',\s*'shortages',\s*'issues'\]\)/.test(dataFn)) throw new Error('Manager production-item deletion permission is missing.');
+if (!dataFn.includes('Executives may create production items')) throw new Error('Executive production-item creation validation is missing.');
+if (!js.includes("requireRole('ADMIN','MANAGER','EXECUTIVE')") || !js.includes("requireRole('ADMIN','MANAGER')")) throw new Error('Production-item frontend role checks are incomplete.');
+if (!html.includes("can('ADMIN','MANAGER')?'<button class=\"btn btn-danger\" id=\"delete-item\">")) throw new Error('Manager production-item delete action is missing from the deployed inline application.');
 if (js.includes('localStorage.setItem(STORAGE_KEY') || js.includes('safeState = { ...state')) throw new Error('Business data is still being stored in LocalStorage.');
 if (/SUPABASE_SECRET_KEY\s*[:=]\s*['\"]sb_secret_/i.test(html + js)) throw new Error('Secret key appears in browser code.');
 
-console.log('Project check passed: Profile Solutions UI v9, Supabase shared operational data, realtime synchronization, temporary passwords, Netlify Functions, and migrations are present.');
+console.log('Project check passed: Profile Solutions ERP v10.1, corrected production-item permissions, production-ready Excel bulk upload, Supabase shared data, realtime synchronization, temporary passwords and Netlify Functions are present.');

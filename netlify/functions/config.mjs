@@ -56,6 +56,9 @@ export default async () => {
       dataStorage: 'supabase-postgresql',
       realtimeMode: 'postgres-changes',
       sharedDataReady,
+      applicationVersion: '10.1.0',
+      productionItemPermissions: 'admin-manager-full-executive-create-and-stage-update',
+      bulkUploadMode: 'validated-supabase-import',
     }), { status: 200, headers: JSON_HEADERS });
   } catch (error) {
     return new Response(JSON.stringify({ error: error.message || 'Configuration failed.' }), {

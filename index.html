@@ -950,6 +950,7 @@ form.is-busy button[type="submit"]::after, form.is-busy .btn-primary:last-child:
 <body>
   <div id="app"></div>
   <input type="file" id="backup-file-input" accept="application/json" class="hidden" />
+  <input type="file" id="excel-file-input" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" class="hidden" />
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script>
@@ -1087,10 +1088,11 @@ form.is-busy button[type="submit"]::after, form.is-busy .btn-primary:last-child:
   let realtimeReloadTimer = null;
   let operationalLoadPromise = null;
   let remoteReloadPending = false;
+  let bulkImportInFlight = false;
 
   function defaultState() {
     return {
-      version: 9,
+      version: 10,
       settings: {
         companyName: 'Profile Solutions ERP',
         factoryName: 'Wada Manufacturing Unit',
@@ -1679,7 +1681,7 @@ form.is-busy button[type="submit"]::after, form.is-busy .btn-primary:last-child:
     clearTimeout(realtimeReloadTimer);
     realtimeReloadTimer = setTimeout(async () => {
       if (!authSession || !operationalDataReady) return;
-      if (syncInFlight) {
+      if (syncInFlight || bulkImportInFlight) {
         remoteReloadPending = true;
         return;
       }
@@ -2103,7 +2105,7 @@ form.is-busy button[type="submit"]::after, form.is-busy .btn-primary:last-child:
     openModal(item.itemName,`<div class="info-banner"><div>⚙</div><div><strong>${esc(project?.name||'Unknown project')}</strong><p>BOM: ${esc(item.bomNumber||'—')} • Job: ${esc(item.jobNumber||'—')} • Quantity: ${fmtNumber(item.quantity)}</p></div></div><div class="timeline">${timeline}</div>
       <div class="grid grid-3" style="margin-top:18px">${miniMetric('Current Stage',STAGES[item.currentStage])}${miniMetric('Progress',completionPercent(item)+'%')}${miniMetric('Status',item.approvalStatus==='SUBMITTED'?'Awaiting Approval':item.status)}</div>
       <div class="tabs" style="margin-top:20px"><button class="tab active" data-item-tab="history">Stage History</button><button class="tab" data-item-tab="details">Item Details</button><button class="tab" data-item-tab="attachments">Attachments</button></div><div id="item-tab-content">${itemHistoryHtml(item)}</div>`,
-      `<button class="btn btn-secondary" data-close-modal>Close</button>${can('ADMIN','MANAGER')?'<button class="btn btn-secondary" id="edit-item">Edit Item</button>':''}${can('ADMIN')?'<button class="btn btn-danger" id="delete-item">Delete Item</button>':''}${canUpdateItemStage(item)&&item.approvalStatus!=='SUBMITTED'&&item.currentStage<8?'<button class="btn btn-primary" id="update-stage">Update Stage</button>':''}${canApprove?'<button class="btn btn-danger" id="reject-stage">Reject</button><button class="btn btn-success" id="approve-stage">Approve & Continue</button>':''}${item.currentStage===8&&item.status!=='Completed'&&can('ADMIN','MANAGER')?'<button class="btn btn-success" id="complete-item">Mark Completed</button>':''}`,'modal-xl');
+      `<button class="btn btn-secondary" data-close-modal>Close</button>${can('ADMIN','MANAGER')?'<button class="btn btn-secondary" id="edit-item">Edit Item</button>':''}${can('ADMIN','MANAGER')?'<button class="btn btn-danger" id="delete-item">Delete Item</button>':''}${canUpdateItemStage(item)&&item.approvalStatus!=='SUBMITTED'&&item.currentStage<8?'<button class="btn btn-primary" id="update-stage">Update Stage</button>':''}${canApprove?'<button class="btn btn-danger" id="reject-stage">Reject</button><button class="btn btn-success" id="approve-stage">Approve & Continue</button>':''}${item.currentStage===8&&item.status!=='Completed'&&can('ADMIN','MANAGER')?'<button class="btn btn-success" id="complete-item">Mark Completed</button>':''}`,'modal-xl');
     document.querySelectorAll('[data-item-tab]').forEach(b=>b.onclick=()=>{document.querySelectorAll('[data-item-tab]').forEach(x=>x.classList.toggle('active',x===b));const c=document.getElementById('item-tab-content');c.innerHTML=b.dataset.itemTab==='history'?itemHistoryHtml(item):b.dataset.itemTab==='details'?itemDetailsHtml(item,project):itemAttachmentsHtml(item);bindAttachmentLinks();});
     if(document.getElementById('edit-item'))document.getElementById('edit-item').onclick=()=>{closeModal();openItemForm(item);};
     if(document.getElementById('delete-item'))document.getElementById('delete-item').onclick=()=>deleteItem(item.id);
@@ -2113,7 +2115,7 @@ form.is-busy button[type="submit"]::after, form.is-busy .btn-primary:last-child:
     if(document.getElementById('complete-item'))document.getElementById('complete-item').onclick=()=>{item.status='Completed';item.approvalStatus='';item.updatedAt=nowISO();item.history.push(historyEvent(item,'Completed','Completed','Item marked ready and completed.'));audit('COMPLETE','Production',`Completed ${item.itemName}`,item.id);saveState();closeModal();renderProduction();toast('Item completed');};
     bindAttachmentLinks();
   }
-  function deleteItem(id){if(!requireRole('ADMIN'))return;const item=itemById(id);if(!item)return;if(!confirm(`Delete ${item.itemName} and its complete stage history?`))return;state.items=state.items.filter(i=>i.id!==id);state.shortages=state.shortages.filter(s=>s.itemId!==id);state.issues=state.issues.filter(x=>x.itemId!==id);audit('DELETE','Production',`Deleted production item ${item.itemName}`,id);saveState();closeModal();renderProduction();toast('Item deleted');}
+  function deleteItem(id){if(!requireRole('ADMIN','MANAGER'))return;const item=itemById(id);if(!item)return;if(!confirm(`Delete ${item.itemName} and its complete stage history?`))return;state.items=state.items.filter(i=>i.id!==id);state.shortages=state.shortages.filter(s=>s.itemId!==id);state.issues=state.issues.filter(x=>x.itemId!==id);audit('DELETE','Production',`Deleted production item ${item.itemName}`,id);saveState();closeModal();renderProduction();toast('Item deleted');}
 
   function itemHistoryHtml(item){const h=[...(item.history||[])].reverse();return h.length?`<div class="activity-list">${h.map(x=>`<div class="activity-item"><div class="activity-icon">${x.status==='Approved'?'✓':x.status==='Rejected'?'!':'⚙'}</div><div class="activity-main"><strong>${esc(x.stageName)} • ${esc(x.action)}</strong><span>${esc(x.remarks||'No remarks')}<br>${esc(x.updatedByName||'Unknown user')} • ${esc(x.status||'')}</span>${(x.attachments||[]).length?`<div>${x.attachments.map(a=>`<button class="file-chip" data-file-id="${a.id}" data-item-id="${item.id}">▤ ${esc(a.name)}</button>`).join('')}</div>`:''}</div><div class="activity-time">${fmtDate(x.date,true)}</div></div>`).join('')}</div>`:emptyState('◷','No stage history','Updates will appear here.');}
   function itemDetailsHtml(i,p){return `<div class="grid grid-2"><div>${detailRow('Project',p?.name)}${detailRow('Site',i.site||p?.site)}${detailRow('BOM Number',i.bomNumber)}${detailRow('Job Number',i.jobNumber)}${detailRow('Size',i.size)}${detailRow('Quantity',fmtNumber(i.quantity))}</div><div>${detailRow('Current Stage',STAGES[i.currentStage])}${detailRow('Status',i.status)}${detailRow('Quantity Verified',i.quantityVerified?'Yes':'No')}${detailRow('Shortages',i.shortages||'None')}${detailRow('Created',fmtDate(i.createdAt,true))}${detailRow('Updated',fmtDate(i.updatedAt,true))}</div></div>`;}
@@ -2165,55 +2167,268 @@ form.is-busy button[type="submit"]::after, form.is-busy .btn-primary:last-child:
   }
   function openShortageForm(){if(!requireRole('ADMIN','MANAGER','EXECUTIVE'))return;const projects=assignedProjects();if(!projects.length)return toast('No project available','Create or assign a project first.','warning');openModal('Report Material Shortage',`<form id="shortage-form"><div class="form-grid"><div class="form-group"><label>Project *</label><select name="projectId" id="shortage-project" required>${projects.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></div><div class="form-group"><label>Production item</label><select name="itemId" id="shortage-item"></select></div><div class="form-group"><label>Material *</label><input name="material" required></div><div class="form-group"><label>UOM</label><input name="uom" value="Nos."></div><div class="form-group"><label>Required quantity</label><input name="requiredQty" type="number" min="0" step="any" value="0"></div><div class="form-group"><label>Available quantity</label><input name="availableQty" type="number" min="0" step="any" value="0"></div><div class="form-group"><label>Severity</label><select name="severity"><option>Low</option><option>Medium</option><option>High</option><option>Critical</option></select></div></div><div class="form-group"><label>Remarks</label><textarea name="remarks"></textarea></div></form>`,`<button class="btn btn-secondary" data-close-modal>Cancel</button><button class="btn btn-primary" id="save-shortage">Report Shortage</button>`);const fill=()=>{const pid=document.getElementById('shortage-project').value;document.getElementById('shortage-item').innerHTML='<option value="">Project level</option>'+state.items.filter(i=>i.projectId===pid).map(i=>`<option value="${i.id}">${esc(i.itemName)}</option>`).join('');};fill();document.getElementById('shortage-project').onchange=fill;document.getElementById('save-shortage').onclick=()=>{const f=document.getElementById('shortage-form');if(!f.reportValidity())return;const fd=new FormData(f),req=number(fd.get('requiredQty')),avail=number(fd.get('availableQty'));const s={id:uid('SHR'),projectId:String(fd.get('projectId')),itemId:String(fd.get('itemId')||''),material:String(fd.get('material')).trim(),requiredQty:req,availableQty:avail,shortageQty:Math.max(0,req-avail),uom:String(fd.get('uom')||''),severity:String(fd.get('severity')),status:'Open',remarks:String(fd.get('remarks')||''),reportedBy:getCurrentUser().id,createdAt:nowISO()};state.shortages.push(s);const p=projectById(s.projectId);if(p?.managerId)notify(p.managerId,'Material shortage reported',`${s.material}: shortage of ${s.shortageQty} ${s.uom}`,'Delay',s.itemId||s.id);audit('CREATE','Shortages',`Reported shortage for ${s.material}`,s.id);saveState();closeModal();renderShortages();toast('Shortage reported');};}
 
+  function ensureImportInput() {
+    let input = document.getElementById('excel-file-input');
+    if (!input) {
+      input = document.createElement('input');
+      input.type = 'file';
+      input.id = 'excel-file-input';
+      input.className = 'hidden';
+      document.body.appendChild(input);
+    }
+    input.accept = '.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel';
+    return input;
+  }
+
   function renderImport() {
     setPageTitle('Excel Import','Validate and import MASTER SHEET records');
     const page=document.getElementById('page-content');
-    page.innerHTML=`${pageToolbar('Excel / CSV Import','Map factory master data into projects and production items.',`<a class="btn btn-secondary" href="ERP_Bulk_Upload_Template.xlsx" download>⇩ Download Excel Template</a>${can('ADMIN')?'<button class="btn btn-danger" id="delete-uploaded-data">Delete Uploaded Data</button>':''}`)}
-      <div class="info-banner warning"><div>⚠</div><div><strong>Browser-based import</strong><p>XLSX files are read locally in your browser. Nothing is uploaded to a server. SheetJS is loaded from a public CDN; CSV import works even when the library is unavailable.</p></div></div>
-      <div class="import-steps"><div class="import-step active">1. Select File</div><div class="import-step">2. Read Data</div><div class="import-step">3. Validate</div><div class="import-step">4. Import</div></div>
-      <section class="card"><div class="card-body"><div class="import-drop" id="import-drop"><div class="drop-icon">⇧</div><h3>Drop MASTER SHEET.xlsx here</h3><p>Supported formats: XLSX, XLS and CSV</p><button class="btn btn-primary" id="choose-import-file">Choose File</button></div><div id="import-results" style="margin-top:18px"></div></div></section>`;
+    page.innerHTML=`${pageToolbar('Excel Bulk Upload','Validate the official template and save every valid record to the shared Supabase database.',`<a class="btn btn-secondary" href="ERP_Bulk_Upload_Template.xlsx" download>⇩ Download Excel Template</a>${can('ADMIN')?'<button class="btn btn-danger" id="delete-uploaded-data">Delete Uploaded Data</button>':''}`)}
+      <div class="info-banner"><div>☁</div><div><strong>Shared database import</strong><p>The Excel workbook is read and validated in your browser. Valid records are then saved securely to Supabase and become available to all authorised users and devices.</p></div></div>
+      <div class="import-steps"><div class="import-step active">1. Select File</div><div class="import-step">2. Read Data</div><div class="import-step">3. Validate</div><div class="import-step">4. Save to Database</div></div>
+      <section class="card"><div class="card-body"><div class="import-drop" id="import-drop"><div class="drop-icon">⇧</div><h3>Drop the official ERP Excel template here</h3><p>Accepted formats: XLSX or XLS • Required sheet: MASTER SHEET</p><button class="btn btn-primary" id="choose-import-file">Choose Excel File</button></div><div id="import-results" style="margin-top:18px"></div></div></section>`;
     if(document.getElementById('delete-uploaded-data'))document.getElementById('delete-uploaded-data').onclick=deleteUploadedData;
-    const input=document.getElementById('excel-file-input');input.value='';document.getElementById('choose-import-file').onclick=()=>input.click();input.onchange=()=>{if(input.files[0])processImportFile(input.files[0]);};const drop=document.getElementById('import-drop');['dragenter','dragover'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('dragover');}));['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('dragover');}));drop.addEventListener('drop',e=>{const f=e.dataTransfer.files[0];if(f)processImportFile(f);});
+    const input=ensureImportInput();
+    input.value='';
+    document.getElementById('choose-import-file').onclick=()=>{input.value='';input.click();};
+    input.onchange=()=>{if(input.files?.[0])processImportFile(input.files[0]);};
+    const drop=document.getElementById('import-drop');
+    ['dragenter','dragover'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('dragover');}));
+    ['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('dragover');}));
+    drop.addEventListener('drop',e=>{const f=e.dataTransfer.files?.[0];if(f)processImportFile(f);});
+  }
+
+  function isSupportedExcelFile(file) {
+    const name=String(file?.name||'').toLowerCase();
+    return name.endsWith('.xlsx')||name.endsWith('.xls');
+  }
+
+  function rowContainsTemplateData(row) {
+    return TEMPLATE_HEADERS.some(header=>String(getCol(row,header)??'').trim()!=='');
   }
 
   async function processImportFile(file) {
     if(!requireRole('ADMIN','MANAGER'))return;
-    const result=document.getElementById('import-results');result.innerHTML='<div class="empty-state"><div class="empty-icon">◷</div><h3>Reading file...</h3><p>Please wait while the workbook is parsed locally.</p></div>';
+    const result=document.getElementById('import-results');
+    result.innerHTML='<div class="empty-state"><div class="empty-icon">◷</div><h3>Reading Excel file...</h3><p>Please wait while the workbook is parsed and checked.</p></div>';
+    importBuffer=null;
     try {
-      let rows=[],headers=[];
-      if(file.name.toLowerCase().endsWith('.csv')) { const parsed=parseCSV(await file.text()); rows=parsed.rows; headers=parsed.headers; }
-      else {
-        if(typeof XLSX==='undefined') throw new Error('XLSX library could not load. Check your internet connection or save the sheet as CSV.');
-        const data=await file.arrayBuffer(),wb=XLSX.read(data,{type:'array',cellDates:false});
-        const sheetName=wb.SheetNames.find(n=>n.trim().toUpperCase()==='MASTER SHEET')||wb.SheetNames[0];
-        const sheet=wb.Sheets[sheetName];
-        const matrix=XLSX.utils.sheet_to_json(sheet,{header:1,defval:'',raw:true});
-        headers=(matrix[0]||[]).map(x=>String(x||''));
-        rows=XLSX.utils.sheet_to_json(sheet,{defval:'',raw:true});
-      }
+      if(!file||!file.size)throw new Error('The selected file is empty. Choose the completed ERP Excel template.');
+      if(!isSupportedExcelFile(file))throw new Error('Invalid file format. Upload the official ERP template in XLSX or XLS format.');
+      if(file.size>25*1024*1024)throw new Error('The Excel file is larger than 25 MB. Split the file into smaller official-template workbooks and upload them separately.');
+      if(typeof XLSX==='undefined')throw new Error('The Excel reader did not load. Refresh the page and try again.');
+
+      const data=await file.arrayBuffer();
+      let wb;
+      try { wb=XLSX.read(data,{type:'array',cellDates:false,cellNF:false,cellText:false}); }
+      catch { throw new Error('The workbook is corrupted or is not a valid Excel file. Download a fresh ERP template and copy your data into it.'); }
+
+      const sheetName=wb.SheetNames.find(n=>cleanKey(n)==='MASTER SHEET');
+      if(!sheetName)throw new Error('Required worksheet "MASTER SHEET" was not found. Use the official ERP Excel template without renaming the sheet.');
+      const sheet=wb.Sheets[sheetName];
+      if(!sheet||!sheet['!ref'])throw new Error('The MASTER SHEET worksheet is empty.');
+
+      const matrix=XLSX.utils.sheet_to_json(sheet,{header:1,defval:'',raw:true,blankrows:false});
+      const headers=(matrix[0]||[]).map(x=>String(x??''));
+      const duplicateHeaders=findDuplicateHeaders(headers);
+      if(duplicateHeaders.length)throw new Error(`Duplicate column header(s): ${duplicateHeaders.join(', ')}. Use each official template header only once.`);
       const missing=validateTemplateHeaders(headers);
-      if(missing.length) throw new Error(`Required column(s) missing: ${missing.join(', ')}. Download and use the ERP Excel template without changing its headers.`);
-      if(!rows.length) throw new Error('The file contains the correct headers but no data rows. Add records below the header row and upload it again.');
-      const parsed=validateImportRows(rows);importBuffer={fileName:file.name,...parsed};renderImportPreview();
-    } catch(e){result.innerHTML=`<div class="info-banner danger"><div>!</div><div><strong>Unable to validate file</strong><p>${esc(e.message)}</p></div></div>`;}
+      if(missing.length)throw new Error(`Required column(s) missing: ${missing.join(', ')}. Download and use the ERP Excel template without changing its headers.`);
+
+      const rows=XLSX.utils.sheet_to_json(sheet,{defval:'',raw:true,blankrows:false}).filter(rowContainsTemplateData);
+      if(!rows.length)throw new Error('The file contains the correct headers but no data rows. Add records below the header row and upload it again.');
+
+      const parsed=validateImportRows(rows);
+      importBuffer={fileName:file.name,fileSize:file.size,rawRows:rows,databaseFailures:[],...parsed};
+      renderImportPreview();
+    } catch(e){
+      result.innerHTML=`<div class="info-banner danger"><div>!</div><div><strong>Unable to validate file</strong><p>${esc(e.message)}</p></div></div>`;
+    }
   }
-  function parseCSV(text){const lines=text.replace(/^\uFEFF/,'').split(/\r?\n/).filter(x=>x.trim());if(!lines.length)return{headers:[],rows:[]};const parseLine=line=>{const out=[];let v='',q=false;for(let i=0;i<line.length;i++){const c=line[i];if(c==='"'&&line[i+1]==='"'){v+='"';i++;}else if(c==='"')q=!q;else if(c===','&&!q){out.push(v.trim());v='';}else v+=c;}out.push(v.trim());return out;};const headers=parseLine(lines[0]);const rows=lines.slice(1).map(l=>{const vals=parseLine(l),o={};headers.forEach((h,i)=>o[h]=vals[i]??'');return o;});return{headers,rows};}
-  function cleanKey(k){return String(k||'').trim().toUpperCase().replace(/\s+/g,' ');}
+
+  function cleanKey(k){return String(k??'').replace(/^\uFEFF/,'').trim().toUpperCase().replace(/[\r\n]+/g,' ').replace(/\s+/g,' ');}
   function validateTemplateHeaders(headers){const available=new Set(headers.map(cleanKey).filter(Boolean));return TEMPLATE_HEADERS.filter(h=>!available.has(cleanKey(h)));}
-  function getCol(row,...names){const map={};Object.entries(row).forEach(([k,v])=>map[cleanKey(k)]=v);for(const n of names){if(map[cleanKey(n)]!==undefined)return map[cleanKey(n)];}return '';}
+  function findDuplicateHeaders(headers){const seen=new Set(),duplicates=new Set();headers.map(cleanKey).filter(Boolean).forEach(h=>{if(seen.has(h))duplicates.add(h);seen.add(h);});return[...duplicates];}
+  function getCol(row,...names){const map={};Object.entries(row||{}).forEach(([k,v])=>map[cleanKey(k)]=v);for(const n of names){if(map[cleanKey(n)]!==undefined)return map[cleanKey(n)];}return '';}
   function canonicalStage(value){const s=String(value||'').trim().toUpperCase().replace(/\s*-\s*/g,' - ').replace(/\s+/g,' ');const compact=s.replace(/[\s-]/g,'');const found=STAGES.find(x=>x.replace(/[\s-]/g,'')===compact);return found||'';}
-  function excelDate(value){if(value===0||value==='0'||value===''||value==null)return'';if(typeof value==='number'){const d=new Date(Math.round((value-25569)*86400*1000));return Number.isNaN(d.getTime())?'':d.toISOString().slice(0,10);}const s=String(value).trim();const dmy=s.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);if(dmy){const d=new Date(`${dmy[3]}-${dmy[2].padStart(2,'0')}-${dmy[1].padStart(2,'0')}T00:00:00`);return Number.isNaN(d.getTime())?'':d.toISOString().slice(0,10);}const d=new Date(s);return Number.isNaN(d.getTime())?'':d.toISOString().slice(0,10);}
+  function blankOptionalExcelValue(value){const text=String(value??'').trim();return value==null||text===''||/^0(?:\.0+)?$/.test(text);}
+  function excelDate(value){
+    if(blankOptionalExcelValue(value))return'';
+    if(value instanceof Date&&!Number.isNaN(value.getTime()))return`${value.getFullYear()}-${String(value.getMonth()+1).padStart(2,'0')}-${String(value.getDate()).padStart(2,'0')}`;
+    if(typeof value==='number'){
+      const d=new Date(Math.round((value-25569)*86400*1000));
+      return Number.isNaN(d.getTime())?'':d.toISOString().slice(0,10);
+    }
+    const s=String(value).trim();
+    const dmy=s.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);
+    if(dmy){const d=new Date(`${dmy[3]}-${dmy[2].padStart(2,'0')}-${dmy[1].padStart(2,'0')}T00:00:00`);return Number.isNaN(d.getTime())?'':d.toISOString().slice(0,10);}
+    const iso=s.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})$/);
+    if(iso){const d=new Date(`${iso[1]}-${iso[2].padStart(2,'0')}-${iso[3].padStart(2,'0')}T00:00:00`);return Number.isNaN(d.getTime())?'':d.toISOString().slice(0,10);}
+    const d=new Date(s);return Number.isNaN(d.getTime())?'':d.toISOString().slice(0,10);
+  }
   function extractQty(name){const matches=[...String(name||'').matchAll(/(\d+(?:\.\d+)?)\s*(?:NOS?\.?|PCS?\.?|PIECES?)/gi)];return matches.length?number(matches[matches.length-1][1]):0;}
   function extractSize(name){const m=String(name||'').match(/(?:W(?:IDTH)?\s*)?(\d+(?:\.\d+)?)\s*MM\s*[X×]\s*(?:H(?:EIGHT)?\s*)?(\d+(?:\.\d+)?)\s*MM/i);return m?`${m[1]} x ${m[2]} mm`:'';}
-  function validateImportRows(rows){const valid=[],failed=[],warnings=[],seen=new Set();rows.forEach((r,index)=>{const itemName=String(getCol(r,'ITEM NAME')).trim(),projectName=String(getCol(r,'PROJECT NAME')).trim(),statusRaw=getCol(r,'STATUS'),stage=canonicalStage(statusRaw),qtyCell=getCol(r,'QTY'),qtyText=String(qtyCell??'').trim(),qtyParsed=qtyText===''?0:Number(qtyCell),suggested=extractQty(itemName),qty=Number.isFinite(qtyParsed)&&qtyParsed>0?qtyParsed:suggested;const dateFields=[['BOM ISSUE DATE','bomIssueDate'],['DRAWING ISSUE DATE','drawingIssueDate'],['INDENT ISSUE DATE','indentIssueDate'],['TENT DEL DATE','targetDate']];const dates={};const dateErrors=[];dateFields.forEach(([header,key])=>{const raw=getCol(r,header);dates[key]=excelDate(raw);if(String(raw??'').trim()&&!dates[key])dateErrors.push(`${header} has an invalid date`);});const rec={sourceRow:index+2,projectName,itemName,site:String(getCol(r,'SITE DETAILS')).trim(),size:String(getCol(r,'SIZE')).trim()||extractSize(itemName),bomPath:String(getCol(r,'BOM')).trim(),quantity:qty,quantitySource:Number.isFinite(qtyParsed)&&qtyParsed>0?'Excel Column':suggested>0?'Item Description':'Missing',quantityVerified:Number.isFinite(qtyParsed)&&qtyParsed>0,bomNumber:String(getCol(r,'BOM NUMBER')).trim(),jobNumber:String(getCol(r,'JOB NO')).trim(),...dates,indentNumber:String(getCol(r,'INDENT NO')).trim(),shortages:String(getCol(r,'SHORTAGES')).trim(),stage,statusRaw:String(statusRaw||'').trim(),raw:r,errors:[],warnings:[]};if(!projectName)rec.errors.push('PROJECT NAME is required');if(!itemName)rec.errors.push('ITEM NAME is required');if(!stage)rec.errors.push(`STATUS is invalid: ${rec.statusRaw||'blank'}`);if(qtyText!==''&&(!Number.isFinite(qtyParsed)||qtyParsed<=0))rec.errors.push('QTY must be a number greater than zero');if(qtyText===''&&!suggested)rec.errors.push('QTY is required unless a quantity such as 10 NOS is present in ITEM NAME');if(suggested>0&&qtyText==='')rec.warnings.push('Quantity extracted from ITEM NAME and requires confirmation');rec.errors.push(...dateErrors);const key=[projectName,itemName,rec.site,rec.bomNumber,rec.jobNumber,stage,qty].map(x=>String(x).trim().toLowerCase()).join('|');if(seen.has(key))rec.errors.push('Exact duplicate row exists in this file');seen.add(key);const existing=state.items.some(i=>[projectById(i.projectId)?.name,i.itemName,i.site,i.bomNumber,i.jobNumber,STAGES[i.currentStage],i.quantity].map(x=>String(x||'').trim().toLowerCase()).join('|')===key);if(existing)rec.errors.push('Exact duplicate record already exists in the ERP');if(rec.errors.length)failed.push(rec);else{valid.push(rec);if(rec.warnings.length)warnings.push(rec);}});return{total:rows.length,valid,failed,warnings};}
+  function parseQuantityCell(value){
+    const text=String(value??'').trim();
+    if(text===''||/^0(?:\.0+)?$/.test(text))return{kind:'missing',value:0};
+    const normalized=text.replace(/,/g,'');
+    if(!/^\d+(?:\.\d+)?$/.test(normalized))return{kind:'invalid',value:0};
+    const parsed=Number(normalized);
+    return Number.isFinite(parsed)&&parsed>0?{kind:'valid',value:parsed}:{kind:'missing',value:0};
+  }
+  function importDuplicateKey(projectName,itemName,site,bomNumber,jobNumber,stage,quantity){return[projectName,itemName,site,bomNumber,jobNumber,stage,quantity].map(x=>String(x??'').trim().toLowerCase()).join('|');}
 
-  function renderImportPreview(){const r=importBuffer,result=document.getElementById('import-results');document.querySelectorAll('.import-step').forEach((x,i)=>{x.classList.toggle('done',i<2);x.classList.toggle('active',i===2);});result.innerHTML=`<div class="validation-summary"><div class="validation-box"><strong>${r.total}</strong><span>Total Rows</span></div><div class="validation-box"><strong class="text-success">${r.valid.length}</strong><span>Valid Rows</span></div><div class="validation-box"><strong class="text-warning">${r.warnings.length}</strong><span>Warnings</span></div><div class="validation-box"><strong class="text-danger">${r.failed.length}</strong><span>Failed Rows</span></div><div class="validation-box"><strong>${new Set(r.valid.map(x=>x.projectName)).size}</strong><span>Projects</span></div></div>
-      ${r.failed.length?`<div class="info-banner danger"><div>!</div><div><strong>${r.failed.length} row(s) will not be imported</strong><p>Rows with missing project/item names, invalid stages or exact duplicates are excluded.</p></div></div>`:''}
-      <div class="table-wrap"><table><thead><tr><th>Row</th><th>Project</th><th>Item</th><th>Qty</th><th>BOM / Job</th><th>Stage</th><th>Validation</th></tr></thead><tbody>${[...r.valid.slice(0,80),...r.failed.slice(0,20)].map(x=>`<tr><td>${x.sourceRow}</td><td>${esc(x.projectName||'—')}</td><td>${esc(x.itemName||'—')}<div class="small muted">${esc(x.site)}</div></td><td>${fmtNumber(x.quantity)}<div class="small muted">${esc(x.quantitySource)}</div></td><td>${esc(x.bomNumber||'—')}<div class="small muted">${esc(x.jobNumber||'—')}</div></td><td>${esc(x.stage||x.statusRaw||'—')}</td><td>${x.errors.length?`<span class="text-danger small">${esc(x.errors.join('; '))}</span>`:x.warnings.length?`<span class="text-warning small">${esc(x.warnings.join('; '))}</span>`:'<span class="text-success small">Valid</span>'}</td></tr>`).join('')}</tbody></table></div>
-      <div class="modal-footer" style="position:static;padding:16px 0 0"><button class="btn btn-secondary" id="download-error-report">Download Error CSV</button><button class="btn btn-primary" id="confirm-import" ${r.valid.length?'':'disabled'}>Import ${r.valid.length} Valid Rows</button></div>`;document.getElementById('confirm-import').onclick=confirmImport;document.getElementById('download-error-report').onclick=downloadErrorReport;}
-  function confirmImport(){if(!requireRole('ADMIN','MANAGER'))return;const user=getCurrentUser(),createdProjects=[];let imported=0;importBuffer.valid.forEach(r=>{let p=state.projects.find(x=>x.name.trim().toLowerCase()===r.projectName.toLowerCase()&&(r.jobNumber?String(x.jobNumber||'').toLowerCase()===r.jobNumber.toLowerCase():true));if(!p){p={id:uid('PRJ'),code:`PRJ-${String(state.projects.length+1).padStart(4,'0')}`,name:r.projectName,client:'',site:r.site,jobNumber:r.jobNumber,status:'Active',startDate:r.bomIssueDate||todayISO(),targetDate:r.targetDate,managerId:user.role==='MANAGER'?user.id:'',executiveIds:[],priority:'Medium',createdAt:nowISO()};state.projects.push(p);createdProjects.push(p);}const idx=STAGES.indexOf(r.stage);const i={id:uid('ITM'),projectId:p.id,itemName:r.itemName,rawItemName:r.itemName,site:r.site,size:r.size,quantity:r.quantity,quantitySource:r.quantitySource,quantityVerified:r.quantityVerified,bomPath:r.bomPath,bomNumber:r.bomNumber,jobNumber:r.jobNumber,bomIssueDate:r.bomIssueDate,drawingIssueDate:r.drawingIssueDate,indentNumber:r.indentNumber,indentIssueDate:r.indentIssueDate,targetDate:r.targetDate,currentStage:idx,currentStageName:r.stage,status:r.shortages?'Delayed':'In Progress',approvalStatus:'',shortages:r.shortages,remarks:'',createdAt:nowISO(),updatedAt:nowISO(),history:[{id:uid('HIS'),stageIndex:idx,stageName:r.stage,action:'Excel Initial Import',status:'Imported',updatedBy:user.id,updatedByName:user.name,date:nowISO(),remarks:`Imported from ${importBuffer.fileName}, source row ${r.sourceRow}. Previous stage history was not available in the workbook.`,attachments:[]} ]};state.items.push(i);if(r.shortages){state.shortages.push({id:uid('SHR'),projectId:p.id,itemId:i.id,material:'Imported shortage',requiredQty:0,availableQty:0,shortageQty:0,uom:'',severity:'High',status:'Open',remarks:r.shortages,reportedBy:user.id,createdAt:nowISO()});}imported++;});audit('IMPORT','Import',`Imported ${imported} production rows from ${importBuffer.fileName}`);saveState();document.querySelectorAll('.import-step').forEach(x=>x.classList.add('done'));document.getElementById('import-results').innerHTML=`<div class="empty-state"><div class="empty-icon">✓</div><h3>Import completed</h3><p>${imported} items imported across ${createdProjects.length} new project(s). Invalid rows were skipped.</p><button class="btn btn-primary" id="open-production-after-import">Open Production Tracker</button></div>`;document.getElementById('open-production-after-import').onclick=()=>{currentRoute='production';renderAppShell();};toast('Import completed',`${imported} records added successfully.`);}
+  function validateImportRows(rows){
+    const valid=[],failed=[],warnings=[],seen=new Set();
+    rows.forEach((r,index)=>{
+      const itemName=String(getCol(r,'ITEM NAME')).trim();
+      const projectName=String(getCol(r,'PROJECT NAME')).trim();
+      const statusRaw=getCol(r,'STATUS');
+      const stage=canonicalStage(statusRaw);
+      const qtyCell=getCol(r,'QTY');
+      const qtyInfo=parseQuantityCell(qtyCell);
+      const suggested=extractQty(itemName);
+      let qty=0,quantitySource='Missing',quantityVerified=false;
+      const rowWarnings=[];
+      if(qtyInfo.kind==='valid'){
+        qty=qtyInfo.value;quantitySource='Excel Column';quantityVerified=true;
+      }else if(qtyInfo.kind==='missing'&&suggested>0){
+        qty=suggested;quantitySource='ITEM NAME';
+        rowWarnings.push(`${String(qtyCell??'').trim()===''?'QTY was blank':'QTY was 0'}; quantity ${suggested} was extracted from ITEM NAME and should be verified`);
+      }
+
+      const dateFields=[['BOM ISSUE DATE','bomIssueDate'],['DRAWING ISSUE DATE','drawingIssueDate'],['INDENT ISSUE DATE','indentIssueDate'],['TENT DEL DATE','targetDate']];
+      const dates={},dateErrors=[];
+      dateFields.forEach(([header,key])=>{const raw=getCol(r,header);dates[key]=excelDate(raw);if(!blankOptionalExcelValue(raw)&&!dates[key])dateErrors.push(`${header} has an invalid date`);});
+      const rawSize=getCol(r,'SIZE');
+      const rec={
+        sourceRow:index+2,projectName,itemName,site:String(getCol(r,'SITE DETAILS')).trim(),
+        size:blankOptionalExcelValue(rawSize)?extractSize(itemName):String(rawSize).trim(),
+        bomPath:String(getCol(r,'BOM')).trim(),quantity:qty,quantitySource,quantityVerified,
+        bomNumber:String(getCol(r,'BOM NUMBER')).trim(),jobNumber:String(getCol(r,'JOB NO')).trim(),
+        ...dates,indentNumber:String(getCol(r,'INDENT NO')).trim(),shortages:String(getCol(r,'SHORTAGES')).trim(),
+        stage,statusRaw:String(statusRaw||'').trim(),raw:r,errors:[],warnings:rowWarnings
+      };
+      if(!projectName)rec.errors.push('PROJECT NAME is required');
+      if(!itemName)rec.errors.push('ITEM NAME is required');
+      if(!stage)rec.errors.push(`STATUS is invalid: ${rec.statusRaw||'blank'}`);
+      if(qtyInfo.kind==='invalid')rec.errors.push('QTY must contain only a number greater than zero');
+      if(!qty)rec.errors.push('QTY is required. Enter a number greater than zero or include a quantity such as 10 NOS in ITEM NAME');
+      rec.errors.push(...dateErrors);
+
+      const key=importDuplicateKey(projectName,itemName,rec.site,rec.bomNumber,rec.jobNumber,stage,qty);
+      if(seen.has(key))rec.errors.push('Exact duplicate row exists in this file');
+      seen.add(key);
+      const existing=state.items.some(i=>importDuplicateKey(projectById(i.projectId)?.name,i.itemName,i.site,i.bomNumber,i.jobNumber,STAGES[i.currentStage],i.quantity)===key);
+      if(existing)rec.errors.push('Exact duplicate record already exists in the ERP database');
+      if(rec.errors.length)failed.push(rec);else{valid.push(rec);if(rec.warnings.length)warnings.push(rec);}
+    });
+    return{total:rows.length,valid,failed,warnings};
+  }
+
+  function renderImportPreview(){
+    const r=importBuffer,result=document.getElementById('import-results');
+    document.querySelectorAll('.import-step').forEach((x,i)=>{x.classList.toggle('done',i<2);x.classList.toggle('active',i===2);});
+    result.innerHTML=`<div class="validation-summary"><div class="validation-box"><strong>${r.total}</strong><span>Total Rows</span></div><div class="validation-box"><strong class="text-success">${r.valid.length}</strong><span>Valid Rows</span></div><div class="validation-box"><strong class="text-warning">${r.warnings.length}</strong><span>Warnings</span></div><div class="validation-box"><strong class="text-danger">${r.failed.length}</strong><span>Failed Rows</span></div><div class="validation-box"><strong>${new Set(r.valid.map(x=>x.projectName)).size}</strong><span>Projects</span></div></div>
+      ${r.failed.length?`<div class="info-banner danger"><div>!</div><div><strong>${r.failed.length} row(s) will not be imported</strong><p>Correct the errors shown below or continue to import only the valid rows.</p></div></div>`:''}
+      ${r.warnings.length?`<div class="info-banner warning"><div>⚠</div><div><strong>${r.warnings.length} quantity warning(s)</strong><p>Where QTY was blank or zero, the ERP extracted a quantity such as “10 NOS” from ITEM NAME. Review these rows before importing.</p></div></div>`:''}
+      <div class="table-wrap"><table><thead><tr><th>Row</th><th>Project</th><th>Item</th><th>Qty</th><th>BOM / Job</th><th>Stage</th><th>Validation</th></tr></thead><tbody>${[...r.valid.slice(0,80),...r.failed.slice(0,40)].map(x=>`<tr><td>${x.sourceRow}</td><td>${esc(x.projectName||'—')}</td><td>${esc(x.itemName||'—')}<div class="small muted">${esc(x.site)}</div></td><td>${fmtNumber(x.quantity)}<div class="small muted">${esc(x.quantitySource)}</div></td><td>${esc(x.bomNumber||'—')}<div class="small muted">${esc(x.jobNumber||'—')}</div></td><td>${esc(x.stage||x.statusRaw||'—')}</td><td>${x.errors.length?`<span class="text-danger small">${esc(x.errors.join('; '))}</span>`:x.warnings.length?`<span class="text-warning small">${esc(x.warnings.join('; '))}</span>`:'<span class="text-success small">Valid</span>'}</td></tr>`).join('')}</tbody></table></div>
+      <div class="modal-footer" style="position:static;padding:16px 0 0"><button class="btn btn-secondary" id="download-error-report">Download Validation CSV</button><button class="btn btn-primary" id="confirm-import" ${r.valid.length?'':'disabled'}>Save ${r.valid.length} Valid Rows to Database</button></div>`;
+    document.getElementById('confirm-import').onclick=confirmImport;
+    document.getElementById('download-error-report').onclick=downloadErrorReport;
+  }
+
+  function findImportProject(projects,row){
+    const name=row.projectName.trim().toLowerCase(),job=row.jobNumber.trim().toLowerCase();
+    return projects.find(x=>String(x.name||'').trim().toLowerCase()===name&&(job?String(x.jobNumber||'').trim().toLowerCase()===job:true));
+  }
+
+  function buildImportPlan(validRows){
+    const user=getCurrentUser(),workingProjects=[...state.projects],newProjects=[],items=[],shortages=[],rowBundles=[];
+    validRows.forEach(r=>{
+      let p=findImportProject(workingProjects,r);
+      if(!p){
+        p={id:uid('PRJ'),code:`PRJ-${String(workingProjects.length+1).padStart(4,'0')}`,name:r.projectName,client:'',site:r.site,jobNumber:r.jobNumber,status:'Active',startDate:r.bomIssueDate||todayISO(),targetDate:r.targetDate||'',managerId:user.role==='MANAGER'?user.id:'',executiveIds:[],priority:'Medium',createdAt:nowISO()};
+        workingProjects.push(p);newProjects.push(p);
+      }
+      const idx=STAGES.indexOf(r.stage),item={id:uid('ITM'),projectId:p.id,itemName:r.itemName,rawItemName:r.itemName,site:r.site,size:r.size,quantity:r.quantity,quantitySource:r.quantitySource,quantityVerified:r.quantityVerified,bomPath:r.bomPath,bomNumber:r.bomNumber,jobNumber:r.jobNumber,bomIssueDate:r.bomIssueDate,drawingIssueDate:r.drawingIssueDate,indentNumber:r.indentNumber,indentIssueDate:r.indentIssueDate,targetDate:r.targetDate,currentStage:idx,currentStageName:r.stage,status:r.shortages?'Delayed':'In Progress',approvalStatus:'',shortages:r.shortages,remarks:'',createdAt:nowISO(),updatedAt:nowISO(),history:[{id:uid('HIS'),stageIndex:idx,stageName:r.stage,action:'Excel Initial Import',status:'Imported',updatedBy:user.id,updatedByName:user.name,date:nowISO(),remarks:`Imported from ${importBuffer.fileName}, source row ${r.sourceRow}. Previous stage history was not available in the workbook.`,attachments:[]}]};
+      items.push(item);
+      let shortage=null;
+      if(r.shortages){shortage={id:uid('SHR'),projectId:p.id,itemId:item.id,material:'Imported shortage',requiredQty:0,availableQty:0,shortageQty:0,uom:'',severity:'High',status:'Open',remarks:r.shortages,reportedBy:user.id,createdAt:nowISO()};shortages.push(shortage);}
+      rowBundles.push({sourceRow:r.sourceRow,project:p,item,shortage,source:r});
+    });
+    const records=[
+      ...newProjects.map(project=>({entityType:'projects',recordId:project.id,payload:project,sourceRow:0})),
+      ...rowBundles.map(bundle=>({entityType:'items',recordId:bundle.item.id,payload:bundle.item,sourceRow:bundle.sourceRow})),
+      ...shortages.map(shortage=>({entityType:'shortages',recordId:shortage.id,payload:shortage,sourceRow:rowBundles.find(x=>x.shortage?.id===shortage.id)?.sourceRow||0}))
+    ];
+    return{newProjects,items,shortages,rowBundles,records};
+  }
+
+  function importFailureRecord(bundle,message){return{...bundle.source,errors:[message],warnings:[],databaseFailure:true};}
+
+  async function confirmImport(){
+    if(!requireRole('ADMIN','MANAGER')||!importBuffer?.valid?.length)return;
+    const button=document.getElementById('confirm-import'),originalText=button?.textContent||'Import';
+    if(button){button.disabled=true;button.textContent='Saving to shared database...';button.setAttribute('aria-busy','true');}
+    bulkImportInFlight=true;
+    try{
+      await flushOperationalSync();
+      await loadOperationalData();
+      const refreshedValidation=validateImportRows(importBuffer.rawRows);
+      importBuffer={...importBuffer,...refreshedValidation,databaseFailures:[]};
+      if(!refreshedValidation.valid.length){renderImportPreview();throw new Error('No valid rows remain after checking the latest shared database. Review the validation errors.');}
+
+      const plan=buildImportPlan(refreshedValidation.valid);
+      const response=await callDataApi('bulk-import',{fileName:importBuffer.fileName,records:plan.records});
+      await loadOperationalData();
+
+      const failureById=new Map((response.failures||[]).map(f=>[`${f.entityType}:${f.recordId}`,f.error||'Database insertion failed.']));
+      const importedBundles=[],databaseFailures=[];
+      plan.rowBundles.forEach(bundle=>{
+        const exists=state.items.some(item=>item.id===bundle.item.id);
+        if(exists)importedBundles.push(bundle);
+        else databaseFailures.push(importFailureRecord(bundle,failureById.get(`items:${bundle.item.id}`)||'The database did not confirm this record after import.'));
+      });
+      importBuffer.databaseFailures=databaseFailures;
+
+      if(importedBundles.length){
+        const user=getCurrentUser();
+        const auditRecord={id:uid('AUD'),action:'IMPORT',module:'Import',details:`Imported ${importedBundles.length} production rows from ${importBuffer.fileName}; ${refreshedValidation.failed.length+databaseFailures.length} row(s) failed`,entityId:'',userId:user?.id||'SYSTEM',userName:user?.name||'System',createdAt:nowISO()};
+        await callDataApi('sync',{changes:{audit:{upsert:[auditRecord],delete:[]}}});
+        await loadOperationalData();
+      }
+
+      const importedProjectIds=new Set(importedBundles.map(x=>x.project.id));
+      const newProjectCount=plan.newProjects.filter(project=>importedProjectIds.has(project.id)&&state.projects.some(p=>p.id===project.id)).length;
+      renderImportCompletion({imported:importedBundles.length,newProjects:newProjectCount,validationFailed:refreshedValidation.failed,databaseFailed:databaseFailures});
+      if(importedBundles.length)toast('Bulk upload completed',`${importedBundles.length} record(s) saved to the shared database.`);
+      else toast('Bulk upload failed','No production rows were saved. Review the database errors.','error');
+    }catch(error){
+      try{await loadOperationalData();}catch{}
+      const result=document.getElementById('import-results');
+      if(result&&!result.querySelector('.import-completion'))result.insertAdjacentHTML('afterbegin',`<div class="info-banner danger"><div>!</div><div><strong>Bulk upload failed</strong><p>${esc(error.message)}</p></div></div>`);
+      toast('Bulk upload failed',error.message,'error');
+    }finally{
+      bulkImportInFlight=false;
+      if(button&&document.body.contains(button)){button.disabled=false;button.textContent=originalText;button.removeAttribute('aria-busy');}
+      if(remoteReloadPending){remoteReloadPending=false;scheduleOperationalReload();}
+    }
+  }
+
+  function renderImportCompletion({imported,newProjects,validationFailed,databaseFailed}){
+    const result=document.getElementById('import-results'),allFailed=[...validationFailed,...databaseFailed];
+    document.querySelectorAll('.import-step').forEach(x=>{x.classList.add('done');x.classList.remove('active');});
+    result.innerHTML=`<div class="import-completion"><div class="validation-summary"><div class="validation-box"><strong class="text-success">${imported}</strong><span>Imported</span></div><div class="validation-box"><strong>${newProjects}</strong><span>New Projects</span></div><div class="validation-box"><strong class="text-danger">${allFailed.length}</strong><span>Failed Rows</span></div><div class="validation-box"><strong>${importBuffer.total}</strong><span>Total Rows</span></div></div>
+      <div class="info-banner ${imported?'':'danger'}"><div>${imported?'✓':'!'}</div><div><strong>${imported?'Database import completed':'No rows were imported'}</strong><p>${imported} valid production record(s) are now stored in Supabase and visible to authorised users. ${allFailed.length?`${allFailed.length} row(s) were not imported; review the reasons below.`:'No rows failed.'}</p></div></div>
+      ${allFailed.length?`<div class="table-wrap"><table><thead><tr><th>Row</th><th>Project</th><th>Item</th><th>Failure Reason</th></tr></thead><tbody>${allFailed.slice(0,200).map(r=>`<tr><td>${r.sourceRow||'—'}</td><td>${esc(r.projectName||'—')}</td><td>${esc(r.itemName||'—')}</td><td><span class="text-danger small">${esc((r.errors||[]).join('; ')||'Import failed')}</span></td></tr>`).join('')}</tbody></table></div>`:''}
+      <div class="modal-footer" style="position:static;padding:16px 0 0">${allFailed.length?'<button class="btn btn-secondary" id="download-error-report">Download Failure CSV</button>':''}<button class="btn btn-primary" id="open-production-after-import">Open Production Tracker</button></div></div>`;
+    document.getElementById('open-production-after-import').onclick=()=>{currentRoute='production';renderAppShell();};
+    if(document.getElementById('download-error-report'))document.getElementById('download-error-report').onclick=downloadErrorReport;
+  }
+
   function deleteUploadedData(){if(!requireRole('ADMIN'))return;if(!confirm('Delete all uploaded projects, production items, shortages, issues and operational notifications? User accounts and settings will remain.'))return;if(!confirm('Final confirmation: permanently delete all uploaded operational data?'))return;const counts={projects:state.projects.length,items:state.items.length};state.projects=[];state.items=[];state.shortages=[];state.issues=[];state.notifications=[];importBuffer=null;audit('DELETE','Import',`Deleted all uploaded data (${counts.projects} projects and ${counts.items} items)`);saveState();renderImport();toast('Uploaded data deleted','The ERP is ready for a fresh template upload.');}
-    function downloadErrorReport(){const rows=[...importBuffer.failed,...importBuffer.warnings];const csv=['Source Row,Project,Item,Stage,Errors,Warnings',...rows.map(r=>[r.sourceRow,r.projectName,r.itemName,r.statusRaw,r.errors.join('; '),r.warnings.join('; ')].map(csvCell).join(','))].join('\n');downloadBlob(csv,'factory-erp-import-errors.csv','text/csv');}
+  function downloadErrorReport(){const rows=[...(importBuffer?.failed||[]),...(importBuffer?.warnings||[]),...(importBuffer?.databaseFailures||[])];const csv=['Source Row,Project,Item,Stage,Errors,Warnings',...rows.map(r=>[r.sourceRow,r.projectName,r.itemName,r.statusRaw,r.errors?.join('; ')||'',r.warnings?.join('; ')||''].map(csvCell).join(','))].join('\n');downloadBlob('\uFEFF'+csv,'factory-erp-import-results.csv','text/csv;charset=utf-8');}
   function csvCell(v){const s=String(v??'');return /[",\n]/.test(s)?`"${s.replace(/"/g,'""')}"`:s;}
   function downloadBlob(content,name,type){const b=new Blob([content],{type}),url=URL.createObjectURL(b),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 
@@ -2361,7 +2576,7 @@ form.is-busy button[type="submit"]::after, form.is-busy .btn-primary:last-child:
       <div class="info-banner"><div>🔐</div><div><strong>Authentication is secured by Supabase</strong><p>Passwords are securely hashed by Supabase Auth. Super Admins and authorised Managers create temporary passwords, and users must change them at first login. Projects, production records, shortages, issues, audit entries and notifications are stored in the shared Supabase database and synchronized across authorized users.</p></div></div>
       <div class="grid grid-2"><section class="card"><div class="card-header"><div><h3>Company Configuration</h3><p>Branding and display preferences</p></div></div><div class="card-body"><form id="settings-form"><div class="form-group"><label>Company / ERP Name</label><input name="companyName" value="${esc(state.settings.companyName)}"></div><div class="form-group"><label>Factory Name</label><input name="factoryName" value="${esc(state.settings.factoryName)}"></div><div class="setting-row"><div class="setting-copy"><strong>Dark Mode</strong><span>Use dark industrial interface</span></div><button type="button" class="toggle ${state.settings.theme==='dark'?'on':''}" id="settings-theme"></button></div><button class="btn btn-primary" type="submit" style="margin-top:16px">Save Settings</button></form></div></section>
       <section class="card"><div class="card-header"><div><h3>Backup & Restore</h3><p>Protect shared ERP records</p></div></div><div class="card-body"><div class="setting-row"><div class="setting-copy"><strong>Download Full Backup</strong><span>Projects, production history, shortages and settings</span></div><button class="btn btn-secondary" id="download-backup">⇩ Backup</button></div><div class="setting-row"><div class="setting-copy"><strong>Restore Backup</strong><span>Replace shared operational data from a JSON backup</span></div><button class="btn btn-secondary" id="restore-backup">⇧ Restore</button></div><div class="setting-row"><div class="setting-copy"><strong class="text-danger">Reset All Data</strong><span>Delete all shared ERP operational records</span></div><button class="btn btn-danger" id="reset-data">Reset</button></div></div></section></div>
-      <section class="card" style="margin-top:18px"><div class="card-header"><div><h3>System Information</h3><p>Deployment characteristics</p></div></div><div class="card-body"><div class="grid grid-4">${miniMetric('Technology','HTML / CSS / JS')}${miniMetric('Authentication','Supabase Auth')}${miniMetric('Deployment','Netlify Functions')}${miniMetric('Version','9.0 Shared Data')}</div></div></section>`;
+      <section class="card" style="margin-top:18px"><div class="card-header"><div><h3>System Information</h3><p>Deployment characteristics</p></div></div><div class="card-body"><div class="grid grid-4">${miniMetric('Technology','HTML / CSS / JS')}${miniMetric('Authentication','Supabase Auth')}${miniMetric('Deployment','Netlify Functions')}${miniMetric('Version','10.0 Shared Data + Bulk Import')}</div></div></section>`;
     document.getElementById('settings-form').onsubmit=e=>{e.preventDefault();const fd=new FormData(e.target);state.settings.companyName=String(fd.get('companyName')||BRAND.erpName);state.settings.factoryName=String(fd.get('factoryName')||BRAND.factory);audit('UPDATE','Settings','Updated company configuration');saveState();renderAppShell();toast('Settings saved');};document.getElementById('settings-theme').onclick=toggleTheme;document.getElementById('download-backup').onclick=()=>downloadBlob(JSON.stringify(state,null,2),`factory-erp-backup-${todayISO()}.json`,'application/json');document.getElementById('restore-backup').onclick=()=>document.getElementById('backup-file-input').click();const backupInput=document.getElementById('backup-file-input');backupInput.value='';backupInput.onchange=async()=>{try{const data=JSON.parse(await backupInput.files[0].text());if(!data.projects||!data.items)throw new Error('Invalid backup format');if(!confirm('Restore this backup and replace shared ERP data for every user?'))return;state={...defaultState(),...data,users:state.users};saveState();render();toast('Backup restored','Shared operational data was restored. Supabase users were not changed.');}catch(e){toast('Restore failed',e.message,'error');}};document.getElementById('reset-data').onclick=()=>{if(!confirm('This permanently deletes shared ERP operational data for every user. Continue?'))return;if(!confirm('Final confirmation: delete everything?'))return;state={...defaultState(),settings:state.settings,users:state.users};saveState();render();};
   }
 
@@ -2375,7 +2590,6 @@ form.is-busy button[type="submit"]::after, form.is-busy .btn-primary:last-child:
 
   initialiseAuthentication();
 })();
-
   </script>
 </body>
 </html>

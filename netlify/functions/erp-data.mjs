@@ -12,7 +12,8 @@ const UPSERT_PERMISSIONS = {
 };
 const DELETE_PERMISSIONS = {
   ADMIN: new Set(ENTITY_TYPES),
-  MANAGER: new Set(),
+  // Deleting a production item also removes its linked shortages and issues.
+  MANAGER: new Set(['items', 'shortages', 'issues']),
   EXECUTIVE: new Set(),
 };
 const EXECUTIVE_ITEM_FIELDS = new Set([
@@ -154,7 +155,20 @@ async function assertExecutiveItemUpdates(url, secretKey, caller, changes) {
   if (caller.role !== 'EXECUTIVE') return;
   for (const record of changes.items?.upsert || []) {
     const existing = await getExistingRecord(url, secretKey, 'items', record.recordId);
-    if (!existing) throw new Error('Executives cannot create production items.');
+
+    // Executives may create production items, but only with the recognised production-item fields.
+    if (!existing) {
+      for (const key of Object.keys(record.payload)) {
+        if (!EXECUTIVE_ITEM_FIELDS.has(key)) throw new Error(`Executives cannot set production item field: ${key}`);
+      }
+      if (!String(record.payload.projectId || '').trim()) throw new Error('A production item must belong to a project.');
+      if (!String(record.payload.itemName || '').trim()) throw new Error('Production item name is required.');
+      const stage = Number(record.payload.currentStage);
+      if (!Number.isInteger(stage) || stage < 0 || stage > 8) throw new Error('Production item stage is invalid.');
+      continue;
+    }
+
+    // After creation, Executives can update the production workflow fields only.
     for (const key of Object.keys(record.payload)) {
       if (!EXECUTIVE_ITEM_FIELDS.has(key)) throw new Error(`Executives cannot change production item field: ${key}`);
       if (!EXECUTIVE_MUTABLE_ITEM_FIELDS.has(key) && canonical(record.payload[key]) !== canonical(existing[key])) {
@@ -225,6 +239,77 @@ async function hasAnyOperationalRecord(url, secretKey) {
   return Array.isArray(data) && data.length > 0;
 }
 
+
+function normalizeBulkImportRecords(records = []) {
+  if (!Array.isArray(records) || !records.length) throw new Error('Bulk import contains no records.');
+  if (records.length > 25000) throw new Error('Bulk import contains more than 25,000 database records. Split the workbook and retry.');
+  const seen = new Set();
+  return records.map((record, index) => {
+    const entityType = String(record?.entityType || '');
+    if (!ENTITY_TYPES.has(entityType)) throw new Error(`Unsupported ERP entity in bulk import: ${entityType || `record ${index + 1}`}`);
+    const recordId = cleanRecordId(record?.recordId || record?.payload?.id);
+    const uniqueKey = `${entityType}:${recordId}`;
+    if (seen.has(uniqueKey)) throw new Error(`Duplicate database record in bulk import: ${uniqueKey}`);
+    seen.add(uniqueKey);
+    const sourceRowValue = Number(record?.sourceRow);
+    return {
+      entityType,
+      recordId,
+      payload: validatePayload(record?.payload, recordId),
+      sourceRow: Number.isFinite(sourceRowValue) && sourceRowValue > 0 ? Math.trunc(sourceRowValue) : null,
+    };
+  });
+}
+
+async function upsertMixedImportChunk(url, secretKey, caller, records) {
+  if (!records.length) return { imported: 0, failures: [] };
+  const now = new Date().toISOString();
+  const rows = records.map(record => ({
+    entity_type: record.entityType,
+    record_id: record.recordId,
+    payload: record.payload,
+    updated_by: caller.user.id,
+    updated_at: now,
+  }));
+  try {
+    await sbFetch(url, secretKey, '/rest/v1/erp_records?on_conflict=entity_type,record_id', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify(rows),
+    });
+    return { imported: records.length, failures: [] };
+  } catch (error) {
+    if (records.length === 1) {
+      const record = records[0];
+      return {
+        imported: 0,
+        failures: [{
+          entityType: record.entityType,
+          recordId: record.recordId,
+          sourceRow: record.sourceRow,
+          error: error?.message || 'Database insertion failed.',
+        }],
+      };
+    }
+    const middle = Math.ceil(records.length / 2);
+    const left = await upsertMixedImportChunk(url, secretKey, caller, records.slice(0, middle));
+    const right = await upsertMixedImportChunk(url, secretKey, caller, records.slice(middle));
+    return { imported: left.imported + right.imported, failures: [...left.failures, ...right.failures] };
+  }
+}
+
+async function bulkImportRecords(url, secretKey, caller, records) {
+  const chunkSize = 250;
+  let imported = 0;
+  const failures = [];
+  for (let index = 0; index < records.length; index += chunkSize) {
+    const result = await upsertMixedImportChunk(url, secretKey, caller, records.slice(index, index + chunkSize));
+    imported += result.imported;
+    failures.push(...result.failures);
+  }
+  return { imported, failures };
+}
+
 export default async (request) => {
   if (request.method !== 'POST') return response(405, { error: 'Method not allowed.' });
 
@@ -246,6 +331,25 @@ export default async (request) => {
       await assertExecutiveItemUpdates(supabaseUrl, secretKey, caller, changes);
       await applyChanges(supabaseUrl, secretKey, caller, changes);
       return response(200, { ok: true });
+    }
+
+    if (action === 'bulk-import') {
+      if (!['ADMIN', 'MANAGER'].includes(caller.role)) throw new Error('Only a Super Admin or Manager can run a bulk import.');
+      const records = normalizeBulkImportRecords(body.records);
+      const changesForPermissionCheck = {};
+      for (const record of records) {
+        changesForPermissionCheck[record.entityType] ||= { upsert: [], delete: [] };
+        changesForPermissionCheck[record.entityType].upsert.push({ recordId: record.recordId, payload: record.payload });
+      }
+      assertRolePermissions(caller, changesForPermissionCheck);
+      const result = await bulkImportRecords(supabaseUrl, secretKey, caller, records);
+      return response(200, {
+        ok: result.failures.length === 0,
+        requested: records.length,
+        imported: result.imported,
+        failed: result.failures.length,
+        failures: result.failures,
+      });
     }
 
     if (action === 'seed-if-empty') {
