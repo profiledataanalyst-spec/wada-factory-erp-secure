@@ -133,10 +133,15 @@
   let operationalLoadPromise = null;
   let remoteReloadPending = false;
   let bulkImportInFlight = false;
+  let operationalRecordVersions = new Map();
+  const itemWorkflowLocks = new Set();
+  let realtimeReconnectTimer = null;
+  let realtimeReconnectAttempt = 0;
+  let realtimePollTimer = null;
 
   function defaultState() {
     return {
-      version: 10,
+      version: 10.2,
       settings: {
         companyName: 'Profile Solutions ERP',
         factoryName: 'Wada Manufacturing Unit',
@@ -511,12 +516,102 @@
     if (!token) throw new Error('Your session has expired. Sign in again.');
     const response = await fetch('/api/erp-data', {
       method: 'POST',
+      cache: 'no-store',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ action, ...payload })
     });
     const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(body.error || 'Shared database request failed.');
+    if (!response.ok) {
+      const error = new Error(body.error || 'Shared database request failed.');
+      error.status = response.status;
+      error.details = body;
+      throw error;
+    }
     return body;
+  }
+
+  function recordVersionKey(entity, recordId) {
+    return `${entity}:${recordId}`;
+  }
+
+  function setControlBusy(control, busy) {
+    if (!control) return;
+    control.disabled = Boolean(busy);
+    control.classList.toggle('is-busy-control', Boolean(busy));
+    control.setAttribute('aria-busy', String(Boolean(busy)));
+  }
+
+  function workflowAuditRecord(action, details, entityId) {
+    const user = getCurrentUser();
+    return {
+      id: uid('AUD'), action, module: 'Production', details, entityId,
+      userId: user?.id || 'SYSTEM', userName: user?.name || 'System', createdAt: nowISO()
+    };
+  }
+
+  function workflowNotificationRecord(userId, title, message, type, entityId) {
+    return { id: uid('NOT'), userId, title, message, type, entityId, read: false, createdAt: nowISO() };
+  }
+
+  function applyConfirmedItemRecord(record, version = '') {
+    if (!record?.id) return;
+    const index = state.items.findIndex(item => item.id === record.id);
+    if (index >= 0) state.items[index] = cloneJson(record);
+    else state.items.push(cloneJson(record));
+    state.items = sortBusinessCollection('items', state.items);
+    if (version) operationalRecordVersions.set(recordVersionKey('items', record.id), version);
+    if (lastSyncedBusiness) {
+      const rows = Array.isArray(lastSyncedBusiness.items) ? lastSyncedBusiness.items : [];
+      const syncedIndex = rows.findIndex(item => item.id === record.id);
+      if (syncedIndex >= 0) rows[syncedIndex] = cloneJson(record);
+      else rows.push(cloneJson(record));
+      lastSyncedBusiness.items = sortBusinessCollection('items', rows);
+    }
+  }
+
+  function hasUnsyncedOperationalChanges() {
+    if (!operationalDataReady || applyingRemoteData || !lastSyncedBusiness) return false;
+    return hasOperationalChanges(diffBusinessState(lastSyncedBusiness, extractBusinessState()));
+  }
+
+  async function persistItemWorkflowChange({ itemId, patch, historyEvents = [], auditRecords = [], notifications = [], control = null }) {
+    if (itemWorkflowLocks.has(itemId)) {
+      toast('Update already in progress', 'Wait for the current production-stage update to finish.', 'warning');
+      return null;
+    }
+    const current = itemById(itemId);
+    if (!current) return null;
+    itemWorkflowLocks.add(itemId);
+    setControlBusy(control, true);
+    const expectedVersion = operationalRecordVersions.get(recordVersionKey('items', itemId)) || '';
+    try {
+      if (operationalLoadPromise) await operationalLoadPromise;
+      const result = await callDataApi('update-item-workflow', {
+        itemId,
+        expectedVersion,
+        patch,
+        historyEvents,
+        sideEffects: { audit: auditRecords, notifications }
+      });
+      applyConfirmedItemRecord(result.record, result.version);
+      if (authSession && currentProfile && authView !== 'set-password') renderPage(currentRoute);
+      return itemById(itemId);
+    } catch (error) {
+      console.error('Production workflow update failed', error);
+      if (error.status === 409) {
+        try { await loadOperationalData({ renderAfter: false }); } catch (reloadError) { console.error('Conflict reload failed', reloadError); }
+        if (authSession && currentProfile) renderPage(currentRoute);
+        toast('Record changed by another user', error.message || 'The latest production item has been loaded. Review it and try again.', 'warning');
+      } else {
+        toast('Production update failed', error.message || 'The database did not save this update.', 'error');
+      }
+      return null;
+    } finally {
+      itemWorkflowLocks.delete(itemId);
+      setControlBusy(control, false);
+      if (remoteReloadPending) remoteReloadPending = false;
+      if (authSession && operationalDataReady) scheduleOperationalReload(20);
+    }
   }
 
   function cloneJson(value) {
@@ -669,15 +764,20 @@
     operationalLoadPromise = (async () => {
       const rows = await fetchAllOperationalRows();
       const next = emptyBusinessState();
+      const nextVersions = new Map();
       for (const row of rows) {
         const name = String(row.entity_type || '');
         if (!BUSINESS_COLLECTIONS.includes(name) || !row.payload || typeof row.payload !== 'object') continue;
         const record = { ...row.payload, id: String(row.record_id || row.payload.id || '') };
-        if (record.id) next[name].push(record);
+        if (record.id) {
+          next[name].push(record);
+          if (row.updated_at) nextVersions.set(recordVersionKey(name, record.id), String(row.updated_at));
+        }
       }
       applyingRemoteData = true;
       try {
         for (const name of BUSINESS_COLLECTIONS) state[name] = sortBusinessCollection(name, next[name]);
+        operationalRecordVersions = nextVersions;
         lastSyncedBusiness = extractBusinessState();
         operationalDataReady = true;
       } finally {
@@ -721,40 +821,76 @@
     subscribeOperationalRealtime();
   }
 
-  function scheduleOperationalReload() {
+  function scheduleOperationalReload(delay = 80) {
     clearTimeout(realtimeReloadTimer);
     realtimeReloadTimer = setTimeout(async () => {
       if (!authSession || !operationalDataReady) return;
-      if (syncInFlight || bulkImportInFlight) {
+      if (syncInFlight || bulkImportInFlight || itemWorkflowLocks.size || hasUnsyncedOperationalChanges()) {
         remoteReloadPending = true;
+        if (hasUnsyncedOperationalChanges() && !syncInFlight) queueOperationalSync(0);
         return;
       }
       try { await loadOperationalData({ renderAfter: true }); }
-      catch (error) { console.error('Realtime reload failed', error); }
-    }, 350);
+      catch (error) { console.error('Realtime reload failed', error); scheduleRealtimeReconnect(); }
+    }, Math.max(0, delay));
+  }
+
+  function scheduleRealtimeReconnect() {
+    if (!authSession || realtimeReconnectTimer) return;
+    const delay = Math.min(30000, 1000 * (2 ** Math.min(realtimeReconnectAttempt, 5)));
+    realtimeReconnectAttempt += 1;
+    realtimeReconnectTimer = setTimeout(async () => {
+      realtimeReconnectTimer = null;
+      if (!authSession) return;
+      subscribeOperationalRealtime();
+      scheduleOperationalReload(0);
+    }, delay);
+  }
+
+  function startOperationalPolling() {
+    clearInterval(realtimePollTimer);
+    realtimePollTimer = setInterval(() => {
+      if (document.visibilityState === 'visible' && navigator.onLine) scheduleOperationalReload(0);
+    }, 30000);
   }
 
   function subscribeOperationalRealtime() {
     if (!supabaseClient || !authSession) return;
     if (realtimeChannel) supabaseClient.removeChannel(realtimeChannel);
-    realtimeChannel = supabaseClient
-      .channel(`erp-records-${authSession.user.id}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'erp_records' }, () => scheduleOperationalReload())
-      .subscribe(status => {
-        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-          console.warn('Supabase Realtime channel status:', status);
-        }
-      });
+    const channel = supabaseClient
+      .channel(`erp-records-${authSession.user.id}-${Date.now()}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'erp_records' }, () => scheduleOperationalReload(40));
+    realtimeChannel = channel;
+    channel.subscribe(status => {
+      if (realtimeChannel !== channel) return;
+      if (status === 'SUBSCRIBED') {
+        realtimeReconnectAttempt = 0;
+        clearTimeout(realtimeReconnectTimer);
+        realtimeReconnectTimer = null;
+        startOperationalPolling();
+        scheduleOperationalReload(0);
+      } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+        console.warn('Supabase Realtime channel status:', status);
+        scheduleRealtimeReconnect();
+      }
+    });
   }
 
   function stopOperationalRealtime() {
     clearTimeout(realtimeReloadTimer);
     clearTimeout(syncTimer);
     clearTimeout(syncRetryTimer);
+    clearTimeout(realtimeReconnectTimer);
+    clearInterval(realtimePollTimer);
+    realtimeReconnectTimer = null;
+    realtimePollTimer = null;
+    realtimeReconnectAttempt = 0;
     if (realtimeChannel && supabaseClient) supabaseClient.removeChannel(realtimeChannel);
     realtimeChannel = null;
     operationalDataReady = false;
     lastSyncedBusiness = null;
+    operationalRecordVersions = new Map();
+    itemWorkflowLocks.clear();
   }
 
   async function syncProfiles() {
@@ -1025,7 +1161,16 @@
         <section class="card"><div class="card-header"><div><h3>Upcoming Deliveries</h3><p>Projects closest to target date</p></div></div><div class="card-body">${renderUpcomingDeliveries(projects)}</div></section>
       </div>`;
     page.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>{currentRoute=b.dataset.go; renderAppShell();});
-    document.getElementById('refresh-dashboard').onclick = renderDashboard;
+    document.getElementById('refresh-dashboard').onclick = async event => {
+      const button = event.currentTarget;
+      setControlBusy(button, true);
+      try {
+        await loadOperationalData({ renderAfter: true });
+        toast('Dashboard refreshed', 'Latest production data loaded from the shared database.');
+      } catch (error) {
+        toast('Refresh failed', error.message || 'Unable to load the latest production data.', 'error');
+      } finally { setControlBusy(button, false); }
+    };
     requestAnimationFrame(() => {
       drawBarChart('stage-chart', STAGES.map((s,idx)=>({label:shortStage(s), value:items.filter(i=>Number(i.currentStage)===idx).length})), { horizontal:false });
       drawBarChart('project-chart', projects.slice(0,10).map(p=>({label:p.name.length>18?p.name.slice(0,18)+'…':p.name,value:projectCompletion(p.id)})), { max:100, suffix:'%' });
@@ -1129,7 +1274,7 @@
     page.innerHTML=`${pageToolbar('Production Progress Tracker','Track every item from planning to ready for dispatch.','<button class="btn btn-primary" id="add-item">+ Add Item</button>')}
       <div class="filter-bar"><div class="filter-item search-wide"><input id="item-search" placeholder="Search item, BOM or job number"></div><div class="filter-item"><select id="item-project"><option value="">All projects</option>${projects.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></div><div class="filter-item"><select id="item-stage"><option value="">All stages</option>${STAGES.map((s,i)=>`<option value="${i}">${esc(s)}</option>`).join('')}</select></div><div class="filter-item"><select id="item-status"><option value="">All statuses</option><option>In Progress</option><option>Delayed</option><option>Completed</option><option>On Hold</option></select></div></div>
       <section class="card table-card"><div class="table-wrap"><table><thead><tr><th>Item</th><th>Project</th><th>BOM / Job</th><th>Qty</th><th>Current Stage</th><th>Progress</th><th>Status</th><th>Action</th></tr></thead><tbody id="items-body"></tbody></table></div><div class="table-footer"><span id="items-count"></span><span>Open an item to view its complete timeline</span></div></section>`;
-    const draw=()=>{const q=document.getElementById('item-search').value.toLowerCase(),pid=document.getElementById('item-project').value,stage=document.getElementById('item-stage').value,status=document.getElementById('item-status').value;const rows=items.filter(i=>(!q||[i.itemName,i.bomNumber,i.jobNumber].some(v=>String(v||'').toLowerCase().includes(q)))&&(!pid||i.projectId===pid)&&(!stage||String(i.currentStage)===stage)&&(!status||i.status===status));document.getElementById('items-count').textContent=`${rows.length} item(s)`;document.getElementById('items-body').innerHTML=rows.length?rows.map(i=>`<tr><td><strong>${esc(i.itemName)}</strong><div class="small muted">${esc(i.size||i.site||'')}</div></td><td>${esc(projectById(i.projectId)?.name||'Unknown')}</td><td>${esc(i.bomNumber||'—')}<div class="small muted">${esc(i.jobNumber||'—')}</div></td><td>${fmtNumber(i.quantity)}${i.quantityVerified?'':' <span title="Unverified">⚠</span>'}</td><td>${canUpdateItemStage(i)?`<select class="table-stage-select" data-stage-item="${i.id}" aria-label="Update current stage for ${esc(i.itemName)}">${STAGES.map((s,idx)=>`<option value="${idx}" ${Number(i.currentStage)===idx?'selected':''}>${esc(s)}</option>`).join('')}</select>`:esc(STAGES[i.currentStage]||'PLANNING')}</td><td style="min-width:140px"><div class="progress-line"><span style="width:${completionPercent(i)}%"></span></div><div class="progress-meta"><span>${completionPercent(i)}%</span><span>${i.approvalStatus==='SUBMITTED'?'Awaiting approval':''}</span></div></td><td>${statusChip(i.approvalStatus==='SUBMITTED'?'Submitted':i.status)}</td><td><button class="btn btn-secondary btn-sm" data-view-item="${i.id}">Open</button></td></tr>`).join(''):`<tr><td colspan="8">${emptyState('⚙','No production items','Import Excel data or add an item manually.')}</td></tr>`;document.querySelectorAll('[data-view-item]').forEach(b=>b.onclick=()=>openItemDetail(b.dataset.viewItem));document.querySelectorAll('[data-stage-item]').forEach(sel=>sel.onchange=()=>updateItemStageDirect(sel.dataset.stageItem,sel.value));};
+    const draw=()=>{const q=document.getElementById('item-search').value.toLowerCase(),pid=document.getElementById('item-project').value,stage=document.getElementById('item-stage').value,status=document.getElementById('item-status').value;const rows=items.filter(i=>(!q||[i.itemName,i.bomNumber,i.jobNumber].some(v=>String(v||'').toLowerCase().includes(q)))&&(!pid||i.projectId===pid)&&(!stage||String(i.currentStage)===stage)&&(!status||i.status===status));document.getElementById('items-count').textContent=`${rows.length} item(s)`;document.getElementById('items-body').innerHTML=rows.length?rows.map(i=>`<tr><td><strong>${esc(i.itemName)}</strong><div class="small muted">${esc(i.size||i.site||'')}</div></td><td>${esc(projectById(i.projectId)?.name||'Unknown')}</td><td>${esc(i.bomNumber||'—')}<div class="small muted">${esc(i.jobNumber||'—')}</div></td><td>${fmtNumber(i.quantity)}${i.quantityVerified?'':' <span title="Unverified">⚠</span>'}</td><td>${canUpdateItemStage(i)?`<select class="table-stage-select" data-stage-item="${i.id}" aria-label="Update current stage for ${esc(i.itemName)}">${STAGES.map((s,idx)=>`<option value="${idx}" ${Number(i.currentStage)===idx?'selected':''}>${esc(s)}</option>`).join('')}</select>`:esc(STAGES[i.currentStage]||'PLANNING')}</td><td style="min-width:140px"><div class="progress-line"><span style="width:${completionPercent(i)}%"></span></div><div class="progress-meta"><span>${completionPercent(i)}%</span><span>${i.approvalStatus==='SUBMITTED'?'Awaiting approval':''}</span></div></td><td>${statusChip(i.approvalStatus==='SUBMITTED'?'Submitted':i.status)}</td><td><button class="btn btn-secondary btn-sm" data-view-item="${i.id}">Open</button></td></tr>`).join(''):`<tr><td colspan="8">${emptyState('⚙','No production items','Import Excel data or add an item manually.')}</td></tr>`;document.querySelectorAll('[data-view-item]').forEach(b=>b.onclick=()=>openItemDetail(b.dataset.viewItem));document.querySelectorAll('[data-stage-item]').forEach(sel=>sel.onchange=()=>updateItemStageDirect(sel.dataset.stageItem,sel.value,sel));};
     draw();['item-search','item-project','item-stage','item-status'].forEach(id=>document.getElementById(id).addEventListener(id==='item-search'?'input':'change',draw));
     if(document.getElementById('add-item'))document.getElementById('add-item').onclick=()=>openItemForm();
   }
@@ -1156,7 +1301,18 @@
     if(document.getElementById('update-stage'))document.getElementById('update-stage').onclick=()=>openStageUpdate(item);
     if(document.getElementById('approve-stage'))document.getElementById('approve-stage').onclick=()=>approveStage(item,true);
     if(document.getElementById('reject-stage'))document.getElementById('reject-stage').onclick=()=>rejectStage(item);
-    if(document.getElementById('complete-item'))document.getElementById('complete-item').onclick=()=>{item.status='Completed';item.approvalStatus='';item.updatedAt=nowISO();item.history.push(historyEvent(item,'Completed','Completed','Item marked ready and completed.'));audit('COMPLETE','Production',`Completed ${item.itemName}`,item.id);saveState();closeModal();renderProduction();toast('Item completed');};
+    if(document.getElementById('complete-item'))document.getElementById('complete-item').onclick=async event=>{
+      const current=itemById(item.id);if(!current)return;
+      const draft=cloneJson(current);draft.status='Completed';draft.approvalStatus='';
+      const saved=await persistItemWorkflowChange({
+        itemId:current.id,
+        patch:{status:'Completed',approvalStatus:''},
+        historyEvents:[historyEvent(draft,'Completed','Completed','Item marked ready and completed.')],
+        auditRecords:[workflowAuditRecord('COMPLETE',`Completed ${current.itemName}`,current.id)],
+        control:event.currentTarget
+      });
+      if(!saved)return;closeModal();renderProduction();toast('Item completed','The database confirmed the completed status.');
+    };
     bindAttachmentLinks();
   }
   function deleteItem(id){if(!requireRole('ADMIN','MANAGER'))return;const item=itemById(id);if(!item)return;if(!confirm(`Delete ${item.itemName} and its complete stage history?`))return;state.items=state.items.filter(i=>i.id!==id);state.shortages=state.shortages.filter(s=>s.itemId!==id);state.issues=state.issues.filter(x=>x.itemId!==id);audit('DELETE','Production',`Deleted production item ${item.itemName}`,id);saveState();closeModal();renderProduction();toast('Item deleted');}
@@ -1168,36 +1324,106 @@
   function bindAttachmentLinks(){document.querySelectorAll('[data-file-id]').forEach(b=>b.onclick=()=>{const item=itemById(b.dataset.itemId);const file=(item.history||[]).flatMap(h=>h.attachments||[]).find(a=>a.id===b.dataset.fileId);if(file?.data){const a=document.createElement('a');a.href=file.data;a.download=file.name;a.click();}else toast('File unavailable','Only metadata is stored for large files.','warning');});}
   function historyEvent(item,action,status,remarks,attachments=[]){return{id:uid('HIS'),stageIndex:item.currentStage,stageName:STAGES[item.currentStage],action,status,updatedBy:getCurrentUser().id,updatedByName:getCurrentUser().name,date:nowISO(),remarks,attachments};}
 
-  function updateItemStageDirect(itemId, nextStageValue) {
+  async function updateItemStageDirect(itemId, nextStageValue, control = null) {
     if(!requireRole('ADMIN','MANAGER','EXECUTIVE'))return;
     const item=itemById(itemId);
     if(!item||!visibleItems().some(x=>x.id===itemId)||!canUpdateItemStage(item))return toast('Access denied','You must be logged in to update a production stage.','error');
     const nextStage=Number(nextStageValue);
-    if(!Number.isInteger(nextStage)||nextStage<0||nextStage>=STAGES.length)return toast('Invalid stage','Select a valid production stage.','error');
+    if(!Number.isInteger(nextStage)||nextStage<0||nextStage>=STAGES.length){if(control)control.value=String(item.currentStage);return toast('Invalid stage','Select a valid production stage.','error');}
     const previousStage=Number(item.currentStage||0);
     if(previousStage===nextStage)return;
     const previousStageName=STAGES[previousStage]||'UNKNOWN';
-    item.currentStage=nextStage;
-    item.currentStageName=STAGES[nextStage];
-    item.approvalStatus='';
-    if(item.status==='Completed'&&nextStage<STAGES.length-1)item.status='In Progress';
-    item.updatedAt=nowISO();
-    item.history=item.history||[];
-    item.history.push(historyEvent(item,'Stage Changed',item.status||'In Progress',`Current stage changed directly from ${previousStageName} to ${STAGES[nextStage]} in Production Tracker.`));
-    audit('UPDATE','Production',`Changed ${item.itemName} stage from ${previousStageName} to ${STAGES[nextStage]}`,item.id);
-    saveState();
+    const nextStatus=item.status==='Completed'&&nextStage<STAGES.length-1?'In Progress':item.status;
+    const draft=cloneJson(item);
+    draft.currentStage=nextStage;draft.currentStageName=STAGES[nextStage];draft.approvalStatus='';draft.status=nextStatus;
+    const saved=await persistItemWorkflowChange({
+      itemId:item.id,
+      patch:{currentStage:nextStage,currentStageName:STAGES[nextStage],approvalStatus:'',status:nextStatus},
+      historyEvents:[historyEvent(draft,'Stage Changed',nextStatus||'In Progress',`Current stage changed directly from ${previousStageName} to ${STAGES[nextStage]} in Production Tracker.`)],
+      auditRecords:[workflowAuditRecord('UPDATE',`Changed ${item.itemName} stage from ${previousStageName} to ${STAGES[nextStage]}`,item.id)],
+      control
+    });
+    if(!saved){if(control?.isConnected)control.value=String(previousStage);return;}
     renderProduction();
-    toast('Production stage updated',`${item.itemName} moved to ${STAGES[nextStage]}.`);
+    toast('Production stage updated',`${saved.itemName} moved to ${STAGES[saved.currentStage]}.`);
   }
 
   function openStageUpdate(item) {
     if(!requireRole('ADMIN','MANAGER','EXECUTIVE'))return;
     if(!canUpdateItemStage(item))return toast('Access denied','You must be logged in to update a production stage.','error');
     openModal(`Update: ${STAGES[item.currentStage]}`,`<form id="stage-form"><div class="form-group"><label>Status</label><select name="status"><option>In Progress</option><option>Delayed</option><option>On Hold</option></select></div><div class="form-group"><label>Remarks *</label><textarea name="remarks" required placeholder="Describe work completed, issue or delay reason"></textarea></div><div class="form-group"><label>Images / documents</label><input id="stage-files" type="file" multiple accept="image/*,.pdf,.doc,.docx,.xls,.xlsx"><div class="help-text">Files up to 500 KB each are stored with the synchronized production record. Larger files are recorded by name only.</div></div></form>`,`<button class="btn btn-secondary" data-close-modal>Cancel</button><button class="btn btn-primary" id="submit-stage">Submit Update</button>`);
-    document.getElementById('submit-stage').onclick=async()=>{const f=document.getElementById('stage-form');if(!f.reportValidity())return;const fd=new FormData(f),status=String(fd.get('status')),remarks=String(fd.get('remarks')),files=[...document.getElementById('stage-files').files],attachments=[];for(const file of files.slice(0,4)){attachments.push({id:uid('FIL'),name:file.name,type:file.type,size:file.size,data:file.size<=512000?await fileToDataURL(file):null});}item.status=status;item.updatedAt=nowISO();item.history.push(historyEvent(item,'Stage Updated',status,remarks,attachments));if(status==='In Progress'){if(can('EXECUTIVE')){item.approvalStatus='SUBMITTED';const p=projectById(item.projectId);if(p?.managerId)notify(p.managerId,'Stage completion submitted',`${item.itemName} is waiting for approval at ${STAGES[item.currentStage]}.`,'Approval',item.id);}else{item.approvalStatus='SUBMITTED';}}else if(status==='Delayed'){const p=projectById(item.projectId);if(p?.managerId)notify(p.managerId,'Production delay reported',`${item.itemName} is delayed at ${STAGES[item.currentStage]}.`,'Delay',item.id);}audit('UPDATE','Production',`Updated ${item.itemName} at ${STAGES[item.currentStage]}`,item.id);saveState();closeModal();openItemDetail(item.id);toast(item.approvalStatus==='SUBMITTED'?'Submitted for approval':'Stage updated','Production history has been recorded.');};
+    document.getElementById('submit-stage').onclick=async event=>{
+      const f=document.getElementById('stage-form');if(!f.reportValidity())return;
+      const current=itemById(item.id);if(!current)return toast('Item unavailable','Reload the production tracker and try again.','error');
+      const fd=new FormData(f),status=String(fd.get('status')),remarks=String(fd.get('remarks')),files=[...document.getElementById('stage-files').files],attachments=[];
+      setFormBusy(f,true);setControlBusy(event.currentTarget,true);
+      try {
+        for(const file of files.slice(0,4)){attachments.push({id:uid('FIL'),name:file.name,type:file.type,size:file.size,data:file.size<=512000?await fileToDataURL(file):null});}
+        const approvalStatus=status==='In Progress'?'SUBMITTED':current.approvalStatus||'';
+        const draft=cloneJson(current);draft.status=status;draft.approvalStatus=approvalStatus;
+        const notifications=[];const p=projectById(current.projectId);
+        if(status==='In Progress'&&p?.managerId)notifications.push(workflowNotificationRecord(p.managerId,'Stage completion submitted',`${current.itemName} is waiting for approval at ${STAGES[current.currentStage]}.`,'Approval',current.id));
+        else if(status==='Delayed'&&p?.managerId)notifications.push(workflowNotificationRecord(p.managerId,'Production delay reported',`${current.itemName} is delayed at ${STAGES[current.currentStage]}.`,'Delay',current.id));
+        const saved=await persistItemWorkflowChange({
+          itemId:current.id,
+          patch:{status,approvalStatus,remarks},
+          historyEvents:[historyEvent(draft,'Stage Updated',status,remarks,attachments)],
+          auditRecords:[workflowAuditRecord('UPDATE',`Updated ${current.itemName} at ${STAGES[current.currentStage]}`,current.id)],
+          notifications,
+          control:event.currentTarget
+        });
+        if(!saved)return;
+        closeModal();renderProduction();openItemDetail(saved.id);
+        toast(saved.approvalStatus==='SUBMITTED'?'Submitted for approval':'Stage updated','The database confirmed the production update.');
+      } finally {setFormBusy(f,false);setControlBusy(event.currentTarget,false);}
+    };
   }
-  function approveStage(item){item.history.push(historyEvent(item,'Stage Approved','Approved','Stage completion approved by manager.'));item.approvalStatus='';if(item.currentStage<8){item.currentStage+=1;item.currentStageName=STAGES[item.currentStage];item.status='In Progress';item.history.push(historyEvent(item,'Stage Started','In Progress','Next production stage started.'));}else item.status='Completed';item.updatedAt=nowISO();const p=projectById(item.projectId);(p?.executiveIds||[]).forEach(id=>notify(id,'Stage approved',`${item.itemName} has been approved and moved to ${STAGES[item.currentStage]}.`,'Approval',item.id));audit('APPROVE','Production',`Approved stage for ${item.itemName}`,item.id);saveState();closeModal();renderProduction();toast('Stage approved',item.status==='Completed'?'Item completed.':`Moved to ${STAGES[item.currentStage]}.`);}
-  function rejectStage(item){openModal('Reject Stage',`<form id="reject-form"><div class="form-group"><label>Reason *</label><textarea name="reason" required placeholder="Explain why the stage was rejected"></textarea></div></form>`,`<button class="btn btn-secondary" data-close-modal>Cancel</button><button class="btn btn-danger" id="confirm-reject">Reject Stage</button>`);document.getElementById('confirm-reject').onclick=()=>{const f=document.getElementById('reject-form');if(!f.reportValidity())return;const reason=String(new FormData(f).get('reason'));item.approvalStatus='';item.status='In Progress';item.history.push(historyEvent(item,'Stage Rejected','Rejected',reason));const p=projectById(item.projectId);(p?.executiveIds||[]).forEach(id=>notify(id,'Stage rejected',`${item.itemName}: ${reason}`,'Approval',item.id));audit('REJECT','Production',`Rejected stage for ${item.itemName}: ${reason}`,item.id);saveState();closeModal();renderProduction();toast('Stage rejected','Executive has been notified.','warning');};}
+
+  async function approveStage(item, _legacyFlag = false) {
+    const current=itemById(item.id);if(!current)return;
+    const previousStage=Number(current.currentStage||0);
+    const nextStage=previousStage<STAGES.length-1?previousStage+1:previousStage;
+    const nextStatus=previousStage<STAGES.length-1?'In Progress':'Completed';
+    const draft=cloneJson(current);
+    const approvedEvent=historyEvent(draft,'Stage Approved','Approved','Stage completion approved by manager.');
+    draft.currentStage=nextStage;draft.currentStageName=STAGES[nextStage];draft.status=nextStatus;draft.approvalStatus='';
+    const historyEvents=[approvedEvent];
+    if(previousStage<STAGES.length-1)historyEvents.push(historyEvent(draft,'Stage Started','In Progress','Next production stage started.'));
+    const p=projectById(current.projectId);
+    const notifications=(p?.executiveIds||[]).map(id=>workflowNotificationRecord(id,'Stage approved',`${current.itemName} has been approved and moved to ${STAGES[nextStage]}.`,'Approval',current.id));
+    const control=document.getElementById('approve-stage');
+    const saved=await persistItemWorkflowChange({
+      itemId:current.id,
+      patch:{approvalStatus:'',currentStage:nextStage,currentStageName:STAGES[nextStage],status:nextStatus},
+      historyEvents,
+      auditRecords:[workflowAuditRecord('APPROVE',`Approved stage for ${current.itemName}`,current.id)],
+      notifications,control
+    });
+    if(!saved)return;closeModal();renderProduction();toast('Stage approved',saved.status==='Completed'?'Item completed.':`Moved to ${STAGES[saved.currentStage]}.`);
+  }
+
+  function rejectStage(item) {
+    openModal('Reject Stage',`<form id="reject-form"><div class="form-group"><label>Reason *</label><textarea name="reason" required placeholder="Explain why the stage was rejected"></textarea></div></form>`,`<button class="btn btn-secondary" data-close-modal>Cancel</button><button class="btn btn-danger" id="confirm-reject">Reject Stage</button>`);
+    document.getElementById('confirm-reject').onclick=async event=>{
+      const f=document.getElementById('reject-form');if(!f.reportValidity())return;
+      const current=itemById(item.id);if(!current)return;
+      const reason=String(new FormData(f).get('reason'));
+      const draft=cloneJson(current);draft.approvalStatus='';draft.status='In Progress';
+      const p=projectById(current.projectId);
+      const notifications=(p?.executiveIds||[]).map(id=>workflowNotificationRecord(id,'Stage rejected',`${current.itemName}: ${reason}`,'Approval',current.id));
+      setFormBusy(f,true);
+      try {
+        const saved=await persistItemWorkflowChange({
+          itemId:current.id,
+          patch:{approvalStatus:'',status:'In Progress'},
+          historyEvents:[historyEvent(draft,'Stage Rejected','Rejected',reason)],
+          auditRecords:[workflowAuditRecord('REJECT',`Rejected stage for ${current.itemName}: ${reason}`,current.id)],
+          notifications,control:event.currentTarget
+        });
+        if(!saved)return;closeModal();renderProduction();toast('Stage rejected','Executive has been notified.','warning');
+      } finally {setFormBusy(f,false);}
+    };
+  }
   function fileToDataURL(file){return new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=reject;r.readAsDataURL(file);});}
 
   function renderShortages() {
@@ -1620,7 +1846,7 @@
       <div class="info-banner"><div>🔐</div><div><strong>Authentication is secured by Supabase</strong><p>Passwords are securely hashed by Supabase Auth. Super Admins and authorised Managers create temporary passwords, and users must change them at first login. Projects, production records, shortages, issues, audit entries and notifications are stored in the shared Supabase database and synchronized across authorized users.</p></div></div>
       <div class="grid grid-2"><section class="card"><div class="card-header"><div><h3>Company Configuration</h3><p>Branding and display preferences</p></div></div><div class="card-body"><form id="settings-form"><div class="form-group"><label>Company / ERP Name</label><input name="companyName" value="${esc(state.settings.companyName)}"></div><div class="form-group"><label>Factory Name</label><input name="factoryName" value="${esc(state.settings.factoryName)}"></div><div class="setting-row"><div class="setting-copy"><strong>Dark Mode</strong><span>Use dark industrial interface</span></div><button type="button" class="toggle ${state.settings.theme==='dark'?'on':''}" id="settings-theme"></button></div><button class="btn btn-primary" type="submit" style="margin-top:16px">Save Settings</button></form></div></section>
       <section class="card"><div class="card-header"><div><h3>Backup & Restore</h3><p>Protect shared ERP records</p></div></div><div class="card-body"><div class="setting-row"><div class="setting-copy"><strong>Download Full Backup</strong><span>Projects, production history, shortages and settings</span></div><button class="btn btn-secondary" id="download-backup">⇩ Backup</button></div><div class="setting-row"><div class="setting-copy"><strong>Restore Backup</strong><span>Replace shared operational data from a JSON backup</span></div><button class="btn btn-secondary" id="restore-backup">⇧ Restore</button></div><div class="setting-row"><div class="setting-copy"><strong class="text-danger">Reset All Data</strong><span>Delete all shared ERP operational records</span></div><button class="btn btn-danger" id="reset-data">Reset</button></div></div></section></div>
-      <section class="card" style="margin-top:18px"><div class="card-header"><div><h3>System Information</h3><p>Deployment characteristics</p></div></div><div class="card-body"><div class="grid grid-4">${miniMetric('Technology','HTML / CSS / JS')}${miniMetric('Authentication','Supabase Auth')}${miniMetric('Deployment','Netlify Functions')}${miniMetric('Version','10.0 Shared Data + Bulk Import')}</div></div></section>`;
+      <section class="card" style="margin-top:18px"><div class="card-header"><div><h3>System Information</h3><p>Deployment characteristics</p></div></div><div class="card-body"><div class="grid grid-4">${miniMetric('Technology','HTML / CSS / JS')}${miniMetric('Authentication','Supabase Auth')}${miniMetric('Deployment','Netlify Functions')}${miniMetric('Version','10.2 Reliable Stage Sync')}</div></div></section>`;
     document.getElementById('settings-form').onsubmit=e=>{e.preventDefault();const fd=new FormData(e.target);state.settings.companyName=String(fd.get('companyName')||BRAND.erpName);state.settings.factoryName=String(fd.get('factoryName')||BRAND.factory);audit('UPDATE','Settings','Updated company configuration');saveState();renderAppShell();toast('Settings saved');};document.getElementById('settings-theme').onclick=toggleTheme;document.getElementById('download-backup').onclick=()=>downloadBlob(JSON.stringify(state,null,2),`factory-erp-backup-${todayISO()}.json`,'application/json');document.getElementById('restore-backup').onclick=()=>document.getElementById('backup-file-input').click();const backupInput=document.getElementById('backup-file-input');backupInput.value='';backupInput.onchange=async()=>{try{const data=JSON.parse(await backupInput.files[0].text());if(!data.projects||!data.items)throw new Error('Invalid backup format');if(!confirm('Restore this backup and replace shared ERP data for every user?'))return;state={...defaultState(),...data,users:state.users};saveState();render();toast('Backup restored','Shared operational data was restored. Supabase users were not changed.');}catch(e){toast('Restore failed',e.message,'error');}};document.getElementById('reset-data').onclick=()=>{if(!confirm('This permanently deletes shared ERP operational data for every user. Continue?'))return;if(!confirm('Final confirmation: delete everything?'))return;state={...defaultState(),settings:state.settings,users:state.users};saveState();render();};
   }
 
@@ -1631,6 +1857,9 @@
 
   document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal();});
   window.addEventListener('resize',()=>{if(authSession&&currentRoute==='dashboard'){clearTimeout(window.__chartTimer);window.__chartTimer=setTimeout(()=>renderDashboard(),150);}});
+  window.addEventListener('focus',()=>{if(authSession&&operationalDataReady)scheduleOperationalReload(0);});
+  window.addEventListener('online',()=>{if(authSession&&operationalDataReady){subscribeOperationalRealtime();scheduleOperationalReload(0);}});
+  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&authSession&&operationalDataReady)scheduleOperationalReload(0);});
 
   initialiseAuthentication();
 })();

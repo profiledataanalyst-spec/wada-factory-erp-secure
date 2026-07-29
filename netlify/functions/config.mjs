@@ -56,8 +56,9 @@ export default async () => {
       dataStorage: 'supabase-postgresql',
       realtimeMode: 'postgres-changes',
       sharedDataReady,
-      applicationVersion: '10.1.0',
+      applicationVersion: '10.2.0',
       productionItemPermissions: 'admin-manager-full-executive-create-and-stage-update',
+      productionStageSync: 'database-confirmed-atomic-realtime',
       bulkUploadMode: 'validated-supabase-import',
     }), { status: 200, headers: JSON_HEADERS });
   } catch (error) {

@@ -930,3 +930,14 @@ form.is-busy button[type="submit"]::after, form.is-busy .btn-primary:last-child:
 @keyframes ps-button-spin { to { transform: rotate(360deg); } }
 .btn-primary { background: linear-gradient(135deg, #5d9820, #417513); border-color: #417513; }
 .btn-primary:hover { background: linear-gradient(135deg, #548d1a, #38680e); }
+
+
+/* Reliable production-stage save state */
+.is-busy-control { opacity: .76; cursor: wait !important; pointer-events: none; }
+button.is-busy-control { position: relative; }
+button.is-busy-control::after {
+  content: ""; width: 14px; height: 14px; margin-left: 9px; border: 2px solid currentColor;
+  border-right-color: transparent; border-radius: 50%; display: inline-block; vertical-align: -2px;
+  animation: ps-button-spin .7s linear infinite;
+}
+.table-stage-select.is-busy-control { background-image: none; }

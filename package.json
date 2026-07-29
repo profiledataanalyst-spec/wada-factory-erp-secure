@@ -1,8 +1,8 @@
 {
   "name": "profile-solutions-factory-erp",
-  "version": "10.1.0",
+  "version": "10.2.0",
   "private": true,
-  "description": "Profile Solutions Factory ERP with corrected production-item permissions, production-ready Excel bulk upload, Supabase shared operational data, Realtime synchronization, secure authentication and Netlify Functions",
+  "description": "Profile Solutions Factory ERP with database-confirmed production-stage synchronization, corrected production-item permissions, production-ready Excel bulk upload, Supabase shared operational data, Realtime synchronization, secure authentication and Netlify Functions",
   "scripts": {
     "check": "node scripts/check.mjs"
   },
