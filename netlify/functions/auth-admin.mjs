@@ -40,14 +40,51 @@ function adminHeaders(secretKey, extra = {}) {
   };
 }
 
+const TRANSIENT_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
+
+function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
+class UpstreamError extends Error {
+  constructor(status, message, details = {}) {
+    super(message);
+    this.status = status;
+    this.details = details;
+  }
+}
+
+async function fetchWithPolicy(resource, options = {}, { retries = 0, timeoutMs = 15000 } = {}) {
+  let lastError;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const result = await fetch(resource, { ...options, signal: controller.signal });
+      clearTimeout(timer);
+      if (TRANSIENT_STATUSES.has(result.status) && attempt < retries) {
+        await sleep(Math.min(2500, 250 * (2 ** attempt) + Math.floor(Math.random() * 150)));
+        continue;
+      }
+      return result;
+    } catch (error) {
+      clearTimeout(timer);
+      lastError = error;
+      if (attempt >= retries) break;
+      await sleep(Math.min(2500, 250 * (2 ** attempt) + Math.floor(Math.random() * 150)));
+    }
+  }
+  if (lastError?.name === 'AbortError') throw new UpstreamError(504, 'Supabase request timed out.');
+  throw new UpstreamError(503, lastError?.message || 'Supabase is temporarily unavailable.');
+}
+
 async function sbFetch(url, secretKey, path, options = {}) {
-  const res = await fetch(`${url}${path}`, {
-    ...options,
-    headers: adminHeaders(secretKey, options.headers || {}),
-  });
+  const { retryable = false, timeoutMs = 15000, ...requestOptions } = options;
+  const res = await fetchWithPolicy(`${url}${path}`, {
+    ...requestOptions,
+    headers: adminHeaders(secretKey, requestOptions.headers || {}),
+  }, { retries: retryable ? 2 : 0, timeoutMs });
   const data = await readJson(res);
   if (!res.ok) {
-    throw new Error(data.msg || data.message || data.error_description || data.error || `Supabase request failed (${res.status}).`);
+    throw new UpstreamError(res.status, data.msg || data.message || data.error_description || data.error || `Supabase request failed (${res.status}).`, data);
   }
   return data;
 }
@@ -57,7 +94,7 @@ async function getProfile(url, secretKey, userId) {
     url,
     secretKey,
     `/rest/v1/profiles?id=eq.${encodeURIComponent(userId)}&select=id,email,role,status,created_by,must_change_password&limit=1`,
-    { method: 'GET' },
+    { method: 'GET', retryable: true },
   );
   return Array.isArray(rows) ? rows[0] : null;
 }
@@ -67,9 +104,9 @@ async function getCaller(request, url, publishableKey, secretKey) {
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
   if (!token) throw new Error('Missing authenticated session.');
 
-  const userRes = await fetch(`${url}/auth/v1/user`, {
+  const userRes = await fetchWithPolicy(`${url}/auth/v1/user`, {
     headers: { apikey: publishableKey, Authorization: `Bearer ${token}` },
-  });
+  }, { retries: 1, timeoutMs: 12000 });
   const user = await readJson(userRes);
   if (!userRes.ok || !user.id) throw new Error('Invalid or expired session.');
 
@@ -113,14 +150,16 @@ function assertCanManage(caller, target, desiredRole = '') {
 }
 
 async function profileExists(url, secretKey) {
-  const rows = await sbFetch(url, secretKey, '/rest/v1/profiles?select=id&limit=1', { method: 'GET' });
+  const rows = await sbFetch(url, secretKey, '/rest/v1/profiles?select=id&limit=1', { method: 'GET', retryable: true });
   return Array.isArray(rows) && rows.length > 0;
 }
 
 async function insertProfile(url, secretKey, profile) {
   const rows = await sbFetch(url, secretKey, '/rest/v1/profiles', {
     method: 'POST',
-    headers: { Prefer: 'return=representation' },
+    headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+    retryable: true,
+    timeoutMs: 18000,
     body: JSON.stringify(profile),
   });
   return Array.isArray(rows) ? rows[0] : rows;
@@ -130,6 +169,8 @@ async function patchProfile(url, secretKey, userId, changes) {
   await sbFetch(url, secretKey, `/rest/v1/profiles?id=eq.${encodeURIComponent(userId)}`, {
     method: 'PATCH',
     headers: { Prefer: 'return=minimal' },
+    retryable: true,
+    timeoutMs: 18000,
     body: JSON.stringify(changes),
   });
 }
@@ -137,16 +178,20 @@ async function patchProfile(url, secretKey, userId, changes) {
 async function updateAuthUser(url, secretKey, userId, changes) {
   return sbFetch(url, secretKey, `/auth/v1/admin/users/${encodeURIComponent(userId)}`, {
     method: 'PUT',
+    retryable: true,
+    timeoutMs: 18000,
     body: JSON.stringify(changes),
   });
 }
 
 async function deleteAuthUser(url, secretKey, userId) {
-  await sbFetch(url, secretKey, `/auth/v1/admin/users/${encodeURIComponent(userId)}`, { method: 'DELETE' });
+  await sbFetch(url, secretKey, `/auth/v1/admin/users/${encodeURIComponent(userId)}`, { method: 'DELETE', retryable: true, timeoutMs: 18000 });
 }
 
 export default async (request) => {
   if (request.method !== 'POST') return response(405, { error: 'Method not allowed.' });
+  const headerRequestId = String(request.headers.get('x-erp-request-id') || '').trim();
+  let bodyRequestId = headerRequestId;
 
   const supabaseUrl = env('SUPABASE_URL').replace(/\/$/, '');
   const publishableKey = env('SUPABASE_PUBLISHABLE_KEY', env('SUPABASE_ANON_KEY'));
@@ -156,7 +201,10 @@ export default async (request) => {
   }
 
   try {
-    const body = await request.json();
+    let body;
+    try { body = await request.json(); }
+    catch { throw new UpstreamError(400, 'Request body is invalid JSON.'); }
+    bodyRequestId = String(body?.requestId || headerRequestId || '').trim();
     const action = String(body.action || '');
 
     if (action === 'bootstrap') {
@@ -296,8 +344,21 @@ export default async (request) => {
 
     return response(400, { error: 'Unsupported authentication action.' });
   } catch (error) {
-    const message = error.message || 'Authentication action failed.';
-    const status = /permission|required|session|inactive|protected|Managers can/i.test(message) ? 403 : 400;
-    return response(status, { error: message });
+    const message = error?.message || 'Authentication action failed.';
+    const upstreamStatus = Number(error?.status) || 0;
+    const status = upstreamStatus === 401
+      ? 401
+      : upstreamStatus === 429
+        ? 429
+        : upstreamStatus >= 500
+          ? upstreamStatus
+          : /missing authenticated|invalid or expired session/i.test(message)
+            ? 401
+            : /permission|inactive|protected|Managers can/i.test(message)
+              ? 403
+              : 400;
+    const requestId = bodyRequestId || headerRequestId || '';
+    console.error('Authentication function error:', { status, message, requestId });
+    return response(status, { error: message, requestId });
   }
 };

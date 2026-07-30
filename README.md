@@ -1,34 +1,26 @@
-# Profile Solutions Factory ERP v9
+# Profile Solutions Factory ERP
 
-A Profile Solutions-branded manufacturing ERP built with HTML, CSS and JavaScript, deployed on Netlify and secured by Supabase.
+Version 11.0 is the stability and architecture audit release of the shared multi-user ERP.
 
-## Core architecture
+## Runtime architecture
 
-- **Authentication:** Supabase Auth
-- **User directory and roles:** `public.profiles`
-- **Operational source of truth:** `public.erp_records`
-- **Secure writes:** Netlify Function `erp-data.mjs`
-- **Live synchronization:** Supabase Realtime Postgres Changes
-- **Deployment:** GitHub-connected Netlify site
+- Static HTML/CSS/JavaScript frontend
+- Supabase Authentication
+- Supabase PostgreSQL shared operational records
+- Supabase Realtime incremental synchronization
+- Netlify Functions for protected role-checked mutations
+- Atomic/idempotent mutation RPC installed by migration 004
 
-## Shared operational modules
+## Validate
 
-Projects, Excel imports, production items, production-stage history, shortages, issues, notifications and audit logs are stored centrally in Supabase PostgreSQL and are available across authorized browsers and devices.
+```cmd
+npm run audit
+```
 
-LocalStorage is used only for UI preferences and one-time detection of legacy browser data during migration.
+## Deploy
 
-## Required Supabase migrations
+Follow `STABILITY_DEPLOYMENT.md`. Migration `supabase/004_stability_performance.sql` must be run before the Version 11 frontend is used.
 
-Run these in order:
+## Security
 
-1. `supabase/001_auth_profiles.sql`
-2. `supabase/002_temporary_password_workflow.sql`
-3. `supabase/003_shared_operational_data.sql`
-
-## Required Netlify environment variables
-
-- `SUPABASE_URL`
-- `SUPABASE_PUBLISHABLE_KEY`
-- `SUPABASE_SECRET_KEY`
-
-See `SHARED_DATA_DEPLOYMENT.md` for the existing-site upgrade procedure.
+Never place `SUPABASE_SECRET_KEY` in browser code or commit it to GitHub. It belongs only in protected hosting environment variables.

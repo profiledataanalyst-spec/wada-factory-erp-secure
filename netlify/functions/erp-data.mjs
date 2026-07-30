@@ -65,14 +65,57 @@ function adminHeaders(secretKey, extra = {}) {
   };
 }
 
+const TRANSIENT_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
+const DEFAULT_TIMEOUT_MS = 15000;
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+class UpstreamError extends Error {
+  constructor(status, message, details = {}) {
+    super(message);
+    this.status = status;
+    this.details = details;
+  }
+}
+
+async function fetchWithPolicy(resource, options = {}, policy = {}) {
+  const retries = Math.max(0, Number(policy.retries ?? 0));
+  const timeoutMs = Math.max(1000, Number(policy.timeoutMs ?? DEFAULT_TIMEOUT_MS));
+  let lastError;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const result = await fetch(resource, { ...options, signal: controller.signal });
+      clearTimeout(timer);
+      if (TRANSIENT_STATUSES.has(result.status) && attempt < retries) {
+        await sleep(Math.min(2500, 250 * (2 ** attempt) + Math.floor(Math.random() * 150)));
+        continue;
+      }
+      return result;
+    } catch (error) {
+      clearTimeout(timer);
+      lastError = error;
+      if (attempt >= retries) break;
+      await sleep(Math.min(2500, 250 * (2 ** attempt) + Math.floor(Math.random() * 150)));
+    }
+  }
+  if (lastError?.name === 'AbortError') throw new UpstreamError(504, 'Supabase request timed out.');
+  throw new UpstreamError(503, lastError?.message || 'Supabase is temporarily unavailable.');
+}
+
 async function sbFetch(url, secretKey, path, options = {}) {
-  const res = await fetch(`${url}${path}`, {
-    ...options,
-    headers: adminHeaders(secretKey, options.headers || {}),
-  });
+  const { retryable = false, timeoutMs = DEFAULT_TIMEOUT_MS, ...requestOptions } = options;
+  const res = await fetchWithPolicy(`${url}${path}`, {
+    ...requestOptions,
+    headers: adminHeaders(secretKey, requestOptions.headers || {}),
+  }, { retries: retryable ? 2 : 0, timeoutMs });
   const data = await readJson(res);
   if (!res.ok) {
-    throw new Error(data.message || data.error_description || data.error || `Supabase request failed (${res.status}).`);
+    const message = data.message || data.error_description || data.error || `Supabase request failed (${res.status}).`;
+    throw new UpstreamError(res.status, message, data);
   }
   return { data, headers: res.headers, status: res.status };
 }
@@ -82,7 +125,7 @@ async function getProfile(url, secretKey, userId) {
     url,
     secretKey,
     `/rest/v1/profiles?id=eq.${encodeURIComponent(userId)}&select=id,full_name,email,role,status&limit=1`,
-    { method: 'GET' },
+    { method: 'GET', retryable: true, timeoutMs: 12000 },
   );
   return Array.isArray(data) ? data[0] : null;
 }
@@ -92,9 +135,9 @@ async function getCaller(request, url, publishableKey, secretKey) {
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
   if (!token) throw new Error('Missing authenticated session.');
 
-  const userRes = await fetch(`${url}/auth/v1/user`, {
+  const userRes = await fetchWithPolicy(`${url}/auth/v1/user`, {
     headers: { apikey: publishableKey, Authorization: `Bearer ${token}` },
-  });
+  }, { retries: 1, timeoutMs: 12000 });
   const user = await readJson(userRes);
   if (!userRes.ok || !user.id) throw new Error('Invalid or expired session.');
 
@@ -117,26 +160,47 @@ function validatePayload(payload, recordId) {
   return { ...payload, id: recordId };
 }
 
+function cleanRequestId(value, prefix = 'REQ') {
+  const requestId = String(value || '').trim() || `${prefix}-${crypto.randomUUID()}`;
+  if (!/^[A-Za-z0-9_.:-]{8,160}$/.test(requestId)) throw new HttpError(400, 'Request ID is invalid.');
+  return requestId;
+}
+
+function cleanExpectedVersion(value) {
+  const version = String(value || '').trim();
+  if (version && Number.isNaN(new Date(version).getTime())) throw new HttpError(400, 'A record version is invalid.');
+  return version;
+}
+
 function normalizeChanges(rawChanges = {}) {
   const normalized = {};
   let total = 0;
   for (const [entity, raw] of Object.entries(rawChanges || {})) {
-    if (!ENTITY_TYPES.has(entity)) throw new Error(`Unsupported ERP entity: ${entity}`);
+    if (!ENTITY_TYPES.has(entity)) throw new HttpError(400, `Unsupported ERP entity: ${entity}`);
     const upsert = Array.isArray(raw?.upsert) ? raw.upsert : [];
     const remove = Array.isArray(raw?.delete) ? raw.delete : [];
     normalized[entity] = {
-      upsert: upsert.map(record => {
-        const recordId = cleanRecordId(record?.id);
+      upsert: upsert.map(entry => {
+        const source = entry?.record && typeof entry.record === 'object' ? entry.record : entry;
+        const recordId = cleanRecordId(source?.id || entry?.recordId);
         total += 1;
-        return { recordId, payload: validatePayload(record, recordId) };
+        return {
+          recordId,
+          payload: validatePayload(source, recordId),
+          expectedVersion: cleanExpectedVersion(entry?.expectedVersion),
+        };
       }),
-      delete: remove.map(id => {
+      delete: remove.map(entry => {
         total += 1;
-        return cleanRecordId(id);
+        const sourceId = typeof entry === 'object' ? (entry?.recordId || entry?.id) : entry;
+        return {
+          recordId: cleanRecordId(sourceId),
+          expectedVersion: cleanExpectedVersion(typeof entry === 'object' ? entry?.expectedVersion : ''),
+        };
       }),
     };
   }
-  if (total > 1000) throw new Error('Too many records in one synchronization request.');
+  if (total > 5000) throw new HttpError(400, 'Too many records in one synchronization request.');
   return normalized;
 }
 
@@ -162,7 +226,7 @@ async function getExistingRecord(url, secretKey, entity, recordId) {
     url,
     secretKey,
     `/rest/v1/erp_records?entity_type=eq.${encodeURIComponent(entity)}&record_id=eq.${encodeURIComponent(recordId)}&select=payload&limit=1`,
-    { method: 'GET' },
+    { method: 'GET', retryable: true, timeoutMs: 12000 },
   );
   return Array.isArray(data) ? data[0]?.payload || null : null;
 }
@@ -172,7 +236,7 @@ async function getExistingRecordRow(url, secretKey, entity, recordId) {
     url,
     secretKey,
     `/rest/v1/erp_records?entity_type=eq.${encodeURIComponent(entity)}&record_id=eq.${encodeURIComponent(recordId)}&select=payload,updated_at&limit=1`,
-    { method: 'GET' },
+    { method: 'GET', retryable: true, timeoutMs: 12000 },
   );
   return Array.isArray(data) ? data[0] || null : null;
 }
@@ -275,14 +339,13 @@ function normalizeWorkflowSideEffects(raw = {}, caller, now) {
 
 async function updateItemWorkflow(url, secretKey, caller, body) {
   if (!['ADMIN', 'MANAGER', 'EXECUTIVE'].includes(caller.role)) throw new HttpError(403, 'Your role cannot update production stages.');
+  const requestId = cleanRequestId(body.requestId, 'WF');
   const itemId = cleanRecordId(body.itemId);
   const row = await getExistingRecordRow(url, secretKey, 'items', itemId);
   if (!row?.payload) throw new HttpError(404, 'Production item was not found.');
-  const expectedVersion = String(body.expectedVersion || '');
+  const expectedVersion = cleanExpectedVersion(body.expectedVersion);
   const databaseVersion = String(row.updated_at || '');
-  if (expectedVersion && expectedVersion !== databaseVersion) {
-    throw new HttpError(409, 'This production item was updated by another user. The latest database value has been loaded.', { latestRecord: row.payload, latestVersion: databaseVersion });
-  }
+  const mutationExpectedVersion = expectedVersion || databaseVersion;
 
   const patch = normalizeWorkflowPatch(body.patch, caller.role);
   const now = new Date().toISOString();
@@ -295,28 +358,38 @@ async function updateItemWorkflow(url, secretKey, caller, body) {
     updatedAt: now,
   }, itemId);
 
-  const { data } = await sbFetch(
-    url,
-    secretKey,
-    `/rest/v1/erp_records?entity_type=eq.items&record_id=eq.${encodeURIComponent(itemId)}&updated_at=eq.${encodeURIComponent(databaseVersion)}&select=payload,updated_at`,
-    {
-      method: 'PATCH',
-      headers: { Prefer: 'return=representation' },
-      body: JSON.stringify({ payload: nextPayload, updated_by: caller.user.id }),
+  const changes = {
+    items: {
+      upsert: [{ recordId: itemId, payload: nextPayload, expectedVersion: mutationExpectedVersion }],
+      delete: [],
     },
-  );
-  if (!Array.isArray(data) || data.length !== 1) {
-    const latest = await getExistingRecordRow(url, secretKey, 'items', itemId);
-    throw new HttpError(409, 'This production item changed while your update was being saved. The latest database value has been loaded.', { latestRecord: latest?.payload || null, latestVersion: latest?.updated_at || '' });
-  }
+    ...normalizeWorkflowSideEffects(body.sideEffects, caller, now),
+  };
 
-  const warnings = [];
-  const sideEffects = normalizeWorkflowSideEffects(body.sideEffects, caller, now);
-  if (Object.keys(sideEffects).length) {
-    try { await applyChanges(url, secretKey, caller, sideEffects); }
-    catch (error) { console.error('Workflow side-effect synchronization failed:', error?.message || error); warnings.push('The production item was saved, but an audit or notification record could not be written.'); }
+  try {
+    const result = await applyChanges(url, secretKey, caller, changes, requestId);
+    if (result?.deduplicated) {
+      const latest = await getExistingRecordRow(url, secretKey, 'items', itemId);
+      return {
+        record: latest?.payload || nextPayload,
+        version: String(latest?.updated_at || result?.versions?.items?.[itemId] || ''),
+        warnings: [],
+        requestId,
+        deduplicated: true,
+      };
+    }
+    const version = String(result?.versions?.items?.[itemId] || '');
+    return { record: nextPayload, version, warnings: [], requestId, deduplicated: false };
+  } catch (error) {
+    if (Number(error?.status) === 409) {
+      const latest = await getExistingRecordRow(url, secretKey, 'items', itemId).catch(() => null);
+      throw new HttpError(409, 'This production item changed while your update was being saved. The latest database value has been loaded.', {
+        latestRecord: latest?.payload || null,
+        latestVersion: latest?.updated_at || '',
+      });
+    }
+    throw error;
   }
-  return { record: data[0].payload, version: data[0].updated_at, warnings };
 }
 
 async function assertExecutiveItemUpdates(url, secretKey, caller, changes) {
@@ -346,45 +419,47 @@ async function assertExecutiveItemUpdates(url, secretKey, caller, changes) {
   }
 }
 
-async function upsertRows(url, secretKey, caller, entity, records) {
-  if (!records.length) return;
-  const now = new Date().toISOString();
-  const rows = records.map(record => ({
-    entity_type: entity,
-    record_id: record.recordId,
-    payload: record.payload,
-    updated_by: caller.user.id,
-    updated_at: now,
-  }));
-  await sbFetch(url, secretKey, '/rest/v1/erp_records?on_conflict=entity_type,record_id', {
-    method: 'POST',
-    headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
-    body: JSON.stringify(rows),
-  });
-}
-
-function quotedInValue(value) {
-  return `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
-}
-
-async function deleteRows(url, secretKey, entity, ids) {
-  const chunkSize = 100;
-  for (let index = 0; index < ids.length; index += chunkSize) {
-    const chunk = ids.slice(index, index + chunkSize);
-    const expression = chunk.map(quotedInValue).join(',');
-    await sbFetch(
-      url,
-      secretKey,
-      `/rest/v1/erp_records?entity_type=eq.${encodeURIComponent(entity)}&record_id=in.(${encodeURIComponent(expression)})`,
-      { method: 'DELETE', headers: { Prefer: 'return=minimal' } },
-    );
+function toRpcChanges(changes) {
+  const output = {};
+  for (const [entity, change] of Object.entries(changes || {})) {
+    output[entity] = {
+      upsert: (change.upsert || []).map(record => ({
+        recordId: record.recordId,
+        payload: record.payload,
+        expectedVersion: record.expectedVersion || '',
+      })),
+      delete: (change.delete || []).map(record => ({
+        recordId: record.recordId,
+        expectedVersion: record.expectedVersion || '',
+      })),
+    };
   }
+  return output;
 }
 
-async function applyChanges(url, secretKey, caller, changes) {
-  for (const [entity, change] of Object.entries(changes)) {
-    await upsertRows(url, secretKey, caller, entity, change.upsert);
-    await deleteRows(url, secretKey, entity, change.delete);
+async function applyChanges(url, secretKey, caller, changes, requestId) {
+  const mutationId = cleanRequestId(requestId, 'MUT');
+  try {
+    const { data } = await sbFetch(url, secretKey, '/rest/v1/rpc/apply_erp_changes', {
+      method: 'POST',
+      retryable: true,
+      timeoutMs: 25000,
+      body: JSON.stringify({
+        p_request_id: mutationId,
+        p_actor: caller.user.id,
+        p_changes: toRpcChanges(changes),
+      }),
+    });
+    return data && typeof data === 'object' ? data : { ok: true, requestId: mutationId, versions: {} };
+  } catch (error) {
+    const message = error?.message || '';
+    if (/apply_erp_changes|function .* does not exist|schema cache/i.test(message)) {
+      throw new HttpError(503, 'The ERP stability migration is not installed. Run supabase/004_stability_performance.sql in Supabase SQL Editor.');
+    }
+    if (/ERP_CONFLICT\|/i.test(message) || error?.details?.code === '40001') {
+      throw new HttpError(409, 'This record was updated by another user. The latest database value must be reloaded before retrying.');
+    }
+    throw error;
   }
 }
 
@@ -403,7 +478,7 @@ function normalizeSeedRecords(records = []) {
 }
 
 async function hasAnyOperationalRecord(url, secretKey) {
-  const { data } = await sbFetch(url, secretKey, '/rest/v1/erp_records?select=record_id&limit=1', { method: 'GET' });
+  const { data } = await sbFetch(url, secretKey, '/rest/v1/erp_records?select=record_id&limit=1', { method: 'GET', retryable: true, timeoutMs: 12000 });
   return Array.isArray(data) && data.length > 0;
 }
 
@@ -429,23 +504,20 @@ function normalizeBulkImportRecords(records = []) {
   });
 }
 
-async function upsertMixedImportChunk(url, secretKey, caller, records) {
-  if (!records.length) return { imported: 0, failures: [] };
-  const now = new Date().toISOString();
-  const rows = records.map(record => ({
-    entity_type: record.entityType,
-    record_id: record.recordId,
-    payload: record.payload,
-    updated_by: caller.user.id,
-    updated_at: now,
-  }));
-  try {
-    await sbFetch(url, secretKey, '/rest/v1/erp_records?on_conflict=entity_type,record_id', {
-      method: 'POST',
-      headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
-      body: JSON.stringify(rows),
+async function upsertMixedImportChunk(url, secretKey, caller, records, requestId) {
+  if (!records.length) return { imported: 0, failures: [], versions: {} };
+  const changes = {};
+  for (const record of records) {
+    changes[record.entityType] ||= { upsert: [], delete: [] };
+    changes[record.entityType].upsert.push({
+      recordId: record.recordId,
+      payload: record.payload,
+      expectedVersion: '',
     });
-    return { imported: records.length, failures: [] };
+  }
+  try {
+    const result = await applyChanges(url, secretKey, caller, changes, requestId);
+    return { imported: records.length, failures: [], versions: result?.versions || {} };
   } catch (error) {
     if (records.length === 1) {
       const record = records[0];
@@ -457,21 +529,27 @@ async function upsertMixedImportChunk(url, secretKey, caller, records) {
           sourceRow: record.sourceRow,
           error: error?.message || 'Database insertion failed.',
         }],
+        versions: {},
       };
     }
     const middle = Math.ceil(records.length / 2);
-    const left = await upsertMixedImportChunk(url, secretKey, caller, records.slice(0, middle));
-    const right = await upsertMixedImportChunk(url, secretKey, caller, records.slice(middle));
-    return { imported: left.imported + right.imported, failures: [...left.failures, ...right.failures] };
+    const left = await upsertMixedImportChunk(url, secretKey, caller, records.slice(0, middle), `${requestId}:L`);
+    const right = await upsertMixedImportChunk(url, secretKey, caller, records.slice(middle), `${requestId}:R`);
+    return {
+      imported: left.imported + right.imported,
+      failures: [...left.failures, ...right.failures],
+      versions: { ...left.versions, ...right.versions },
+    };
   }
 }
 
-async function bulkImportRecords(url, secretKey, caller, records) {
+async function bulkImportRecords(url, secretKey, caller, records, requestId) {
   const chunkSize = 250;
   let imported = 0;
   const failures = [];
   for (let index = 0; index < records.length; index += chunkSize) {
-    const result = await upsertMixedImportChunk(url, secretKey, caller, records.slice(index, index + chunkSize));
+    const chunkRequestId = `${requestId}:C${Math.floor(index / chunkSize)}`;
+    const result = await upsertMixedImportChunk(url, secretKey, caller, records.slice(index, index + chunkSize), chunkRequestId);
     imported += result.imported;
     failures.push(...result.failures);
   }
@@ -480,6 +558,8 @@ async function bulkImportRecords(url, secretKey, caller, records) {
 
 export default async (request) => {
   if (request.method !== 'POST') return response(405, { error: 'Method not allowed.' });
+  const headerRequestId = String(request.headers.get('x-erp-request-id') || '').trim();
+  let bodyRequestId = headerRequestId;
 
   const supabaseUrl = env('SUPABASE_URL').replace(/\/$/, '');
   const publishableKey = env('SUPABASE_PUBLISHABLE_KEY', env('SUPABASE_ANON_KEY'));
@@ -490,20 +570,23 @@ export default async (request) => {
 
   try {
     const caller = await getCaller(request, supabaseUrl, publishableKey, secretKey);
-    const body = await request.json();
+    let body;
+    try { body = await request.json(); }
+    catch { throw new HttpError(400, 'Request body is invalid JSON.'); }
+    bodyRequestId = String(body?.requestId || headerRequestId || '').trim();
     const action = String(body.action || '');
 
     if (action === 'update-item-workflow') {
       const result = await updateItemWorkflow(supabaseUrl, secretKey, caller, body);
-      return response(200, { ok: true, record: result.record, version: result.version, warnings: result.warnings });
+      return response(200, { ok: true, record: result.record, version: result.version, warnings: result.warnings, requestId: result.requestId, deduplicated: Boolean(result.deduplicated) });
     }
 
     if (action === 'sync') {
       const changes = normalizeChanges(body.changes);
       assertRolePermissions(caller, changes);
       await assertExecutiveItemUpdates(supabaseUrl, secretKey, caller, changes);
-      await applyChanges(supabaseUrl, secretKey, caller, changes);
-      return response(200, { ok: true });
+      const result = await applyChanges(supabaseUrl, secretKey, caller, changes, body.requestId);
+      return response(200, result);
     }
 
     if (action === 'bulk-import') {
@@ -515,7 +598,7 @@ export default async (request) => {
         changesForPermissionCheck[record.entityType].upsert.push({ recordId: record.recordId, payload: record.payload });
       }
       assertRolePermissions(caller, changesForPermissionCheck);
-      const result = await bulkImportRecords(supabaseUrl, secretKey, caller, records);
+      const result = await bulkImportRecords(supabaseUrl, secretKey, caller, records, cleanRequestId(body.requestId, 'IMP'));
       return response(200, {
         ok: result.failures.length === 0,
         requested: records.length,
@@ -531,15 +614,33 @@ export default async (request) => {
         return response(409, { error: 'The shared ERP database already contains operational records.' });
       }
       const changes = normalizeSeedRecords(body.records);
-      await applyChanges(supabaseUrl, secretKey, caller, changes);
-      return response(201, { ok: true, migrated: body.records?.length || 0 });
+      const result = await applyChanges(supabaseUrl, secretKey, caller, changes, body.requestId);
+      return response(201, { ...result, migrated: body.records?.length || 0 });
     }
 
     return response(400, { error: 'Unsupported shared-data action.' });
   } catch (error) {
     const message = error?.message || 'Shared database operation failed.';
-    const status = Number(error?.status) || (/session|active|permission|cannot|only/i.test(message) ? 403 : /not found/i.test(message) ? 404 : /invalid|required|unsupported|too many|too large/i.test(message) ? 400 : 500);
-    console.error('ERP data function error:', message);
-    return response(status, { error: message, ...(error?.details || {}) });
+    const upstreamStatus = Number(error?.status) || 0;
+    const status = upstreamStatus === 401
+      ? 401
+      : upstreamStatus === 409
+        ? 409
+        : upstreamStatus === 429
+          ? 429
+          : upstreamStatus >= 500
+            ? upstreamStatus
+            : /missing authenticated|invalid or expired session/i.test(message)
+              ? 401
+              : /active|permission|cannot|only/i.test(message)
+                ? 403
+                : /not found/i.test(message)
+                  ? 404
+                  : /invalid|required|unsupported|too many|too large/i.test(message)
+                    ? 400
+                    : 500;
+    const requestId = String(error?.details?.requestId || bodyRequestId || headerRequestId || '');
+    console.error('ERP data function error:', { status, message, requestId });
+    return response(status, { error: message, requestId, ...(error?.details || {}) });
   }
 };

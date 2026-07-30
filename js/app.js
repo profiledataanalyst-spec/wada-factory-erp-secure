@@ -106,6 +106,11 @@
     { id: 'settings', label: 'Settings & Backup', icon: ICONS.settings, roles: ['ADMIN'], section: 'Administration' }
   ];
 
+  const APP_VERSION = '11.0.0';
+  const API_TIMEOUT_MS = 22000;
+  const SESSION_REFRESH_WINDOW_SECONDS = 90;
+  const TRANSIENT_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
+
   let state = loadState();
   if (state.settings.companyName === 'Factory ERP') state.settings.companyName = BRAND.erpName;
   if (state.settings.factoryName === 'Main Manufacturing Unit') state.settings.factoryName = BRAND.factory;
@@ -127,21 +132,33 @@
   let syncTimer = null;
   let syncInFlight = false;
   let syncRequestedWhileBusy = false;
-  let syncRetryTimer = null;
+  let syncWaiters = [];
   let realtimeChannel = null;
+  let pendingRealtimePayloads = [];
   let realtimeReloadTimer = null;
+  let realtimeRenderTimer = null;
   let operationalLoadPromise = null;
   let remoteReloadPending = false;
   let bulkImportInFlight = false;
   let operationalRecordVersions = new Map();
   const itemWorkflowLocks = new Set();
+  const operationalMutationLocks = new Set();
   let realtimeReconnectTimer = null;
   let realtimeReconnectAttempt = 0;
-  let realtimePollTimer = null;
+  let realtimeFallbackTimer = null;
+  let realtimeStatus = 'IDLE';
+  let realtimeGeneration = 0;
+  let lastOperationalLoadAt = 0;
+  let sessionRefreshPromise = null;
+  let authTransitionChain = Promise.resolve();
+  let authStateSubscription = null;
+  let authenticatedStartupPromise = null;
+  let sessionExpiryInProgress = false;
+  let globalClickListenerInstalled = false;
 
   function defaultState() {
     return {
-      version: 10.2,
+      version: 11,
       settings: {
         companyName: 'Profile Solutions ERP',
         factoryName: 'Wada Manufacturing Unit',
@@ -197,7 +214,23 @@
 
   function saveState() {
     saveUiPreferences();
-    if (operationalDataReady && !applyingRemoteData && authSession) queueOperationalSync();
+    if (operationalDataReady && !applyingRemoteData && authSession) return queueOperationalSync();
+    return Promise.resolve({ ok: true, skipped: true });
+  }
+
+  function restoreBusinessState(snapshot) {
+    if (!snapshot) return;
+    applyingRemoteData = true;
+    try {
+      for (const name of BUSINESS_COLLECTIONS) state[name] = sortBusinessCollection(name, cloneJson(snapshot[name] || []));
+    } finally {
+      applyingRemoteData = false;
+    }
+  }
+
+  function createRequestId(prefix = 'REQ') {
+    const random = globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    return `${prefix}-${random}`;
   }
 
   function uid(prefix = 'ID') {
@@ -434,11 +467,14 @@
       try {
         await callAuthAdmin('bootstrap', { fullName: name, email, password }, false);
         setupRequired = false;
-        const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+        const { data, error } = await withTimeout(
+          supabaseClient.auth.signInWithPassword({ email, password }),
+          18000,
+          'Sign-in timed out. Check the network connection and try again.',
+        );
         if (error) throw error;
         authSession = data.session;
-        await syncProfiles();
-        await initialiseOperationalData();
+        await prepareAuthenticatedSession(data.session);
         currentRoute = 'dashboard';
         authMessage = '';
         render();
@@ -452,22 +488,33 @@
       e.preventDefault();
       const fd = new FormData(login), email = String(fd.get('email') || '').trim().toLowerCase(), password = String(fd.get('password') || '');
       setFormBusy(login, true);
-      const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
-      if (error) { setFormBusy(login, false); return toast('Login failed', error.message || 'Check your email and password.', 'error'); }
-      authSession = data.session;
       try {
-        await syncProfiles();
-        if (!currentProfile || currentProfile.status !== 'Active') throw new Error('This account is not active. Contact the Super Admin.');
-        if (currentProfile.mustChangePassword) {
-          passwordFlow = 'forced'; authView = 'set-password'; authMessage = ''; render();
+        const { data, error } = await withTimeout(
+          supabaseClient.auth.signInWithPassword({ email, password }),
+          18000,
+          'Sign-in timed out. Check the network connection and try again.',
+        );
+        if (error) throw error;
+        authSession = data.session;
+        const startup = await prepareAuthenticatedSession(data.session);
+        if (startup.passwordChangeRequired) {
+          authMessage = '';
+          render();
           return;
         }
-        await initialiseOperationalData();
         currentRoute = 'dashboard'; authMessage = ''; render();
-        audit('LOGIN', 'Authentication', 'User signed in', currentProfile.id); saveState();
+        audit('LOGIN', 'Authentication', 'User signed in', currentProfile.id);
+        await saveState().catch(error => console.warn('Login audit could not be saved', error));
       } catch (err) {
-        await supabaseClient.auth.signOut(); authSession = null; currentProfile = null;
-        toast('Login blocked', err.message, 'error'); render();
+        if (isAuthenticationFailure(err)) {
+          await supabaseClient.auth.signOut({ scope: 'local' }).catch(() => {});
+        }
+        authSession = null;
+        currentProfile = null;
+        stopOperationalRealtime();
+        const title = isAuthenticationFailure(err) ? 'Login failed' : 'ERP connection failed';
+        toast(title, err.message || 'Check your network connection and try again.', 'error');
+        render();
       } finally { setFormBusy(login, false); }
     });
 
@@ -498,36 +545,149 @@
     finally { setFormBusy(form, false); }
   }
 
-  async function callAuthAdmin(action, payload = {}, needsSession = true) {
-    const headers = { 'Content-Type': 'application/json' };
-    if (needsSession) {
-      const token = authSession?.access_token;
-      if (!token) throw new Error('Your session has expired. Sign in again.');
-      headers.Authorization = `Bearer ${token}`;
+  function delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  function withTimeout(promise, timeoutMs, message) {
+    let timer;
+    return Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message || 'The request timed out.')), timeoutMs);
+      }),
+    ]).finally(() => clearTimeout(timer));
+  }
+
+  async function expireSession(message = 'Your session has expired. Sign in again.') {
+    if (sessionExpiryInProgress) return;
+    sessionExpiryInProgress = true;
+    try {
+      stopOperationalRealtime();
+      authSession = null;
+      currentProfile = null;
+      authView = 'login';
+      passwordFlow = '';
+      authMessage = `ERROR:${message}`;
+      await supabaseClient?.auth.signOut({ scope: 'local' }).catch(() => {});
+      render();
+    } finally {
+      sessionExpiryInProgress = false;
     }
-    const response = await fetch('/api/auth-admin', { method: 'POST', headers, body: JSON.stringify({ action, ...payload }) });
-    const body = await response.json().catch(() => ({}));
+  }
+
+  async function ensureFreshSession(forceRefresh = false) {
+    if (!supabaseClient) throw new Error('Authentication is not initialized.');
+    if (sessionRefreshPromise) return sessionRefreshPromise;
+    sessionRefreshPromise = (async () => {
+      const { data, error } = await withTimeout(
+        supabaseClient.auth.getSession(),
+        12000,
+        'Unable to verify your session. Check the network connection.',
+      );
+      if (error) throw error;
+      let session = data?.session || null;
+      const expiresSoon = session?.expires_at
+        ? Number(session.expires_at) - Math.floor(Date.now() / 1000) <= SESSION_REFRESH_WINDOW_SECONDS
+        : false;
+      if (session && (forceRefresh || expiresSoon)) {
+        const refreshed = await withTimeout(
+          supabaseClient.auth.refreshSession(),
+          15000,
+          'Unable to refresh your session. Check the network connection.',
+        );
+        if (refreshed.error) throw refreshed.error;
+        session = refreshed.data?.session || null;
+      }
+      authSession = session;
+      if (!session?.access_token) {
+        await expireSession();
+        throw new Error('Your session has expired. Sign in again.');
+      }
+      return session;
+    })();
+    try { return await sessionRefreshPromise; }
+    finally { sessionRefreshPromise = null; }
+  }
+
+  async function requestJson(url, options = {}, policy = {}) {
+    const retries = Math.max(0, Number(policy.retries ?? 1));
+    const timeoutMs = Math.max(1000, Number(policy.timeoutMs ?? API_TIMEOUT_MS));
+    let lastError;
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const response = await fetch(url, { ...options, signal: controller.signal });
+        clearTimeout(timer);
+        const body = await response.json().catch(() => ({}));
+        if (TRANSIENT_HTTP_STATUSES.has(response.status) && attempt < retries) {
+          await delay(Math.min(2500, 300 * (2 ** attempt) + Math.floor(Math.random() * 160)));
+          continue;
+        }
+        return { response, body };
+      } catch (error) {
+        clearTimeout(timer);
+        lastError = error;
+        if (attempt >= retries) break;
+        await delay(Math.min(2500, 300 * (2 ** attempt) + Math.floor(Math.random() * 160)));
+      }
+    }
+    if (lastError?.name === 'AbortError') throw new Error('The server request timed out. Please retry.');
+    throw new Error(lastError?.message || 'The server is temporarily unavailable.');
+  }
+
+  async function authenticatedApiRequest(url, payload, policy = {}) {
+    const requestBody = JSON.stringify(payload);
+    for (let authAttempt = 0; authAttempt < 2; authAttempt += 1) {
+      const session = await ensureFreshSession(authAttempt > 0);
+      const { response, body } = await requestJson(url, {
+        method: 'POST',
+        cache: 'no-store',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+          'X-ERP-Request-ID': String(payload.requestId || ''),
+        },
+        body: requestBody,
+      }, policy);
+      if (response.status === 401 && authAttempt === 0) continue;
+      if (response.status === 401) {
+        await expireSession(body.error || 'Your session has expired. Sign in again.');
+      }
+      if (!response.ok) {
+        const error = new Error(body.error || 'Server request failed.');
+        error.status = response.status;
+        error.details = body;
+        throw error;
+      }
+      return body;
+    }
+    throw new Error('Authentication request failed.');
+  }
+
+  async function callAuthAdmin(action, payload = {}, needsSession = true) {
+    const requestId = payload.requestId || createRequestId('AUTH');
+    const bodyPayload = { action, ...payload, requestId };
+    if (needsSession) {
+      return authenticatedApiRequest('/api/auth-admin', bodyPayload, { retries: 0, timeoutMs: API_TIMEOUT_MS });
+    }
+    const { response, body } = await requestJson('/api/auth-admin', {
+      method: 'POST',
+      cache: 'no-store',
+      headers: { 'Content-Type': 'application/json', 'X-ERP-Request-ID': requestId },
+      body: JSON.stringify(bodyPayload),
+    }, { retries: 0, timeoutMs: API_TIMEOUT_MS });
     if (!response.ok) throw new Error(body.error || 'Authentication request failed.');
     return body;
   }
 
   async function callDataApi(action, payload = {}) {
-    const token = authSession?.access_token;
-    if (!token) throw new Error('Your session has expired. Sign in again.');
-    const response = await fetch('/api/erp-data', {
-      method: 'POST',
-      cache: 'no-store',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ action, ...payload })
+    const requestId = payload.requestId || createRequestId('DATA');
+    return authenticatedApiRequest('/api/erp-data', { action, ...payload, requestId }, {
+      retries: 2,
+      timeoutMs: action === 'bulk-import' ? 60000 : API_TIMEOUT_MS,
     });
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      const error = new Error(body.error || 'Shared database request failed.');
-      error.status = response.status;
-      error.details = body;
-      throw error;
-    }
-    return body;
   }
 
   function recordVersionKey(entity, recordId) {
@@ -539,6 +699,21 @@
     control.disabled = Boolean(busy);
     control.classList.toggle('is-busy-control', Boolean(busy));
     control.setAttribute('aria-busy', String(Boolean(busy)));
+  }
+
+  async function withOperationalMutationLock(key, control, task) {
+    if (operationalMutationLocks.has(key)) {
+      toast('Request already in progress', 'Wait for the current database operation to finish.', 'warning');
+      return null;
+    }
+    operationalMutationLocks.add(key);
+    setControlBusy(control, true);
+    try { return await task(); }
+    finally {
+      operationalMutationLocks.delete(key);
+      setControlBusy(control, false);
+      drainRealtimePayloads();
+    }
   }
 
   function workflowAuditRecord(action, details, entityId) {
@@ -599,7 +774,13 @@
     } catch (error) {
       console.error('Production workflow update failed', error);
       if (error.status === 409) {
-        try { await loadOperationalData({ renderAfter: false }); } catch (reloadError) { console.error('Conflict reload failed', reloadError); }
+        const latestRecord = error.details?.latestRecord;
+        const latestVersion = error.details?.latestVersion;
+        if (latestRecord?.id) applyConfirmedItemRecord(latestRecord, latestVersion);
+        else {
+          try { await loadOperationalData({ renderAfter: false }); }
+          catch (reloadError) { console.error('Conflict reload failed', reloadError); }
+        }
         if (authSession && currentProfile) renderPage(currentRoute);
         toast('Record changed by another user', error.message || 'The latest production item has been loaded. Review it and try again.', 'warning');
       } else {
@@ -609,8 +790,11 @@
     } finally {
       itemWorkflowLocks.delete(itemId);
       setControlBusy(control, false);
-      if (remoteReloadPending) remoteReloadPending = false;
-      if (authSession && operationalDataReady) scheduleOperationalReload(20);
+      drainRealtimePayloads();
+      if (remoteReloadPending) {
+        remoteReloadPending = false;
+        scheduleOperationalReload(20);
+      }
     }
   }
 
@@ -668,84 +852,148 @@
     return Object.values(changes || {}).some(change => (change.upsert?.length || 0) + (change.delete?.length || 0) > 0);
   }
 
-  function splitOperationalChanges(changes, maxRecords = 150, maxBytes = 3500000) {
-    const operations = [];
+  function versionedOperationalChanges(changes) {
+    const output = {};
     for (const [entity, change] of Object.entries(changes || {})) {
-      (change.upsert || []).forEach(record => operations.push({ entity, kind: 'upsert', value: record }));
-      (change.delete || []).forEach(id => operations.push({ entity, kind: 'delete', value: id }));
+      output[entity] = {
+        upsert: (change.upsert || []).map(record => ({
+          record,
+          expectedVersion: operationalRecordVersions.get(recordVersionKey(entity, record.id)) || '',
+        })),
+        delete: (change.delete || []).map(recordId => ({
+          recordId,
+          expectedVersion: operationalRecordVersions.get(recordVersionKey(entity, recordId)) || '',
+        })),
+      };
     }
-    const batches = [];
-    let batch = {};
-    let count = 0;
-    let bytes = 0;
-    const pushBatch = () => {
-      if (count) batches.push(batch);
-      batch = {}; count = 0; bytes = 0;
-    };
-    for (const operation of operations) {
-      const operationBytes = JSON.stringify(operation.value).length + 120;
-      if (count && (count >= maxRecords || bytes + operationBytes > maxBytes)) pushBatch();
-      batch[operation.entity] ||= { upsert: [], delete: [] };
-      batch[operation.entity][operation.kind].push(operation.value);
-      count += 1;
-      bytes += operationBytes;
-    }
-    pushBatch();
-    return batches;
+    return output;
   }
 
-  async function sendOperationalChanges(changes) {
-    for (const batch of splitOperationalChanges(changes)) {
-      await callDataApi('sync', { changes: batch });
+
+  function applyReturnedVersions(versions = {}) {
+    for (const [entity, rows] of Object.entries(versions || {})) {
+      for (const [recordId, version] of Object.entries(rows || {})) {
+        if (version) operationalRecordVersions.set(recordVersionKey(entity, recordId), String(version));
+      }
     }
   }
 
-  function queueOperationalSync(delay = 60) {
+  async function sendOperationalChanges(changes, requestId) {
+    const versioned = versionedOperationalChanges(changes);
+    const operationCount = Object.values(versioned).reduce(
+      (total, change) => total + (change.upsert?.length || 0) + (change.delete?.length || 0),
+      0,
+    );
+    const payloadBytes = JSON.stringify(versioned).length;
+    if (operationCount > 5000 || payloadBytes > 4500000) {
+      throw new Error('This database operation is too large to save safely in one transaction. Split the operation into smaller groups.');
+    }
+    const result = await callDataApi('sync', { changes: versioned, requestId });
+    applyReturnedVersions(result?.versions || {});
+    for (const [entity, change] of Object.entries(changes || {})) {
+      for (const recordId of change.delete || []) operationalRecordVersions.delete(recordVersionKey(entity, recordId));
+    }
+    return result;
+  }
+
+  function settleSyncWaiters(waiters, error = null, result = null) {
+    for (const waiter of waiters) {
+      if (error) waiter.reject(error);
+      else waiter.resolve(result || { ok: true });
+    }
+  }
+
+  function queueOperationalSync(delayMs = 40) {
+    const promise = new Promise((resolve, reject) => syncWaiters.push({ resolve, reject }));
     clearTimeout(syncTimer);
-    syncTimer = setTimeout(flushOperationalSync, delay);
+    syncTimer = setTimeout(flushOperationalSync, Math.max(0, delayMs));
+    return promise;
   }
 
   async function flushOperationalSync() {
     clearTimeout(syncTimer);
-    if (!operationalDataReady || applyingRemoteData || !authSession) return;
+    syncTimer = null;
+    if (!operationalDataReady || applyingRemoteData || !authSession) {
+      const waiters = syncWaiters.splice(0);
+      settleSyncWaiters(waiters, null, { ok: true, skipped: true });
+      return { ok: true, skipped: true };
+    }
     if (syncInFlight) {
       syncRequestedWhileBusy = true;
-      return;
+      return null;
     }
+
+    const waiters = syncWaiters.splice(0);
     const snapshot = extractBusinessState();
-    const changes = diffBusinessState(lastSyncedBusiness || emptyBusinessState(), snapshot);
-    if (!hasOperationalChanges(changes)) return;
+    const before = cloneJson(lastSyncedBusiness || emptyBusinessState());
+    const changes = diffBusinessState(before, snapshot);
+    if (!hasOperationalChanges(changes)) {
+      settleSyncWaiters(waiters, null, { ok: true, unchanged: true });
+      return { ok: true, unchanged: true };
+    }
 
     syncInFlight = true;
     syncRequestedWhileBusy = false;
-    clearTimeout(syncRetryTimer);
+    const requestId = createRequestId('SYNC');
     try {
-      await sendOperationalChanges(changes);
+      const result = await sendOperationalChanges(changes, requestId);
       lastSyncedBusiness = cloneJson(snapshot);
+      settleSyncWaiters(waiters, null, result);
+      return result;
     } catch (error) {
-      console.error('Shared database sync failed', error);
-      toast('Database sync failed', `${error.message} Your changes remain on screen and will be retried automatically.`, 'error');
-      syncRetryTimer = setTimeout(() => queueOperationalSync(0), 5000);
+      console.error('Shared database sync failed', { requestId, error });
+      restoreBusinessState(before);
+      lastSyncedBusiness = cloneJson(before);
+      const pending = syncWaiters.splice(0);
+      settleSyncWaiters(waiters, error);
+      settleSyncWaiters(pending, error);
+      toast('Database sync failed', `${error.message} No unsaved change was kept on screen.`, 'error');
+      if (Number(error?.status) === 409) scheduleOperationalReload(0);
+      throw error;
     } finally {
       syncInFlight = false;
-      if (syncRequestedWhileBusy) queueOperationalSync(20);
+      if (syncRequestedWhileBusy || syncWaiters.length) {
+        syncRequestedWhileBusy = false;
+        clearTimeout(syncTimer);
+        syncTimer = setTimeout(flushOperationalSync, 0);
+      }
+      drainRealtimePayloads();
       if (remoteReloadPending) {
         remoteReloadPending = false;
-        scheduleOperationalReload();
+        scheduleOperationalReload(20);
       }
     }
   }
 
   async function fetchAllOperationalRows() {
+    await ensureFreshSession();
     const rows = [];
     const pageSize = 1000;
     for (let from = 0; ; from += pageSize) {
-      const { data, error } = await supabaseClient
-        .from('erp_records')
-        .select('entity_type,record_id,payload,updated_at')
-        .order('entity_type', { ascending: true })
-        .order('record_id', { ascending: true })
-        .range(from, from + pageSize - 1);
+      let pageResult = null;
+      let lastError = null;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          pageResult = await withTimeout(
+            supabaseClient
+              .from('erp_records')
+              .select('entity_type,record_id,payload,updated_at')
+              .order('entity_type', { ascending: true })
+              .order('record_id', { ascending: true })
+              .range(from, from + pageSize - 1),
+            18000,
+            'Database data loading timed out.',
+          );
+          if (!pageResult.error) break;
+          lastError = pageResult.error;
+          if (!/timeout|network|fetch|429|5\d\d/i.test(String(pageResult.error.message || '')) || attempt === 2) break;
+        } catch (error) {
+          lastError = error;
+          if (attempt === 2) break;
+        }
+        await delay(300 * (2 ** attempt));
+      }
+      const { data, error } = pageResult || { data: null, error: lastError };
       if (error) {
         if (/erp_records|does not exist|schema cache/i.test(error.message || '')) {
           throw new Error('The shared ERP database migration has not been installed. Run supabase/003_shared_operational_data.sql in Supabase SQL Editor.');
@@ -758,8 +1006,14 @@
     return rows;
   }
 
+  function refreshCurrentDataView() {
+    if (!authSession || !currentProfile || authView === 'set-password') return;
+    renderPage(currentRoute);
+    renderNotifications();
+  }
+
   async function loadOperationalData({ renderAfter = false } = {}) {
-    if (!supabaseClient || !authSession) return;
+    if (!supabaseClient || !authSession) return 0;
     if (operationalLoadPromise) return operationalLoadPromise;
     operationalLoadPromise = (async () => {
       const rows = await fetchAllOperationalRows();
@@ -780,10 +1034,11 @@
         operationalRecordVersions = nextVersions;
         lastSyncedBusiness = extractBusinessState();
         operationalDataReady = true;
+        lastOperationalLoadAt = Date.now();
       } finally {
         applyingRemoteData = false;
       }
-      if (renderAfter && authSession && currentProfile && authView !== 'set-password') renderAppShell();
+      if (renderAfter) refreshCurrentDataView();
       return rows.length;
     })();
     try { return await operationalLoadPromise; }
@@ -821,54 +1076,143 @@
     subscribeOperationalRealtime();
   }
 
-  function scheduleOperationalReload(delay = 80) {
+  function scheduleRealtimeViewRefresh(delayMs = 40) {
+    clearTimeout(realtimeRenderTimer);
+    realtimeRenderTimer = setTimeout(refreshCurrentDataView, Math.max(0, delayMs));
+  }
+
+  function compareVersions(left, right) {
+    const leftTime = Date.parse(String(left || ''));
+    const rightTime = Date.parse(String(right || ''));
+    if (Number.isFinite(leftTime) && Number.isFinite(rightTime)) return leftTime - rightTime;
+    return String(left || '').localeCompare(String(right || ''));
+  }
+
+  function realtimeMutationBusy() {
+    return Boolean(
+      syncInFlight
+      || syncTimer
+      || bulkImportInFlight
+      || itemWorkflowLocks.size
+      || operationalMutationLocks.size
+      || hasUnsyncedOperationalChanges()
+    );
+  }
+
+  function queueRealtimePayload(payload) {
+    pendingRealtimePayloads.push(payload);
+    if (pendingRealtimePayloads.length > 2000) {
+      pendingRealtimePayloads = [];
+      remoteReloadPending = true;
+    }
+  }
+
+  function applyRealtimePayload(payload, { queued = false } = {}) {
+    const row = payload?.eventType === 'DELETE' ? payload.old : payload.new;
+    const entity = String(row?.entity_type || '');
+    const recordId = String(row?.record_id || '');
+    if (!BUSINESS_COLLECTIONS.includes(entity) || !recordId) return;
+    if (!queued && realtimeMutationBusy()) {
+      queueRealtimePayload(payload);
+      return;
+    }
+
+    const incomingVersion = String(row?.updated_at || '');
+    const currentVersion = operationalRecordVersions.get(recordVersionKey(entity, recordId)) || '';
+    if (payload.eventType === 'DELETE') {
+      if (incomingVersion && currentVersion && compareVersions(incomingVersion, currentVersion) < 0) return;
+    } else if (incomingVersion && currentVersion && compareVersions(incomingVersion, currentVersion) <= 0) {
+      return;
+    }
+
+    applyingRemoteData = true;
+    try {
+      if (payload.eventType === 'DELETE') {
+        state[entity] = state[entity].filter(record => String(record.id) !== recordId);
+        operationalRecordVersions.delete(recordVersionKey(entity, recordId));
+      } else if (row?.payload && typeof row.payload === 'object') {
+        const record = { ...row.payload, id: recordId };
+        const index = state[entity].findIndex(existing => String(existing.id) === recordId);
+        if (index >= 0) state[entity][index] = record;
+        else state[entity].push(record);
+        state[entity] = sortBusinessCollection(entity, state[entity]);
+        if (incomingVersion) operationalRecordVersions.set(recordVersionKey(entity, recordId), incomingVersion);
+      }
+      lastSyncedBusiness = extractBusinessState();
+      lastOperationalLoadAt = Date.now();
+    } finally {
+      applyingRemoteData = false;
+    }
+    scheduleRealtimeViewRefresh();
+  }
+
+  function drainRealtimePayloads() {
+    if (realtimeMutationBusy() || !pendingRealtimePayloads.length) return;
+    const payloads = pendingRealtimePayloads.splice(0);
+    for (const payload of payloads) applyRealtimePayload(payload, { queued: true });
+  }
+
+  function scheduleOperationalReload(delayMs = 80) {
     clearTimeout(realtimeReloadTimer);
     realtimeReloadTimer = setTimeout(async () => {
-      if (!authSession || !operationalDataReady) return;
-      if (syncInFlight || bulkImportInFlight || itemWorkflowLocks.size || hasUnsyncedOperationalChanges()) {
+      if (!authSession || !operationalDataReady || !navigator.onLine) return;
+      if (realtimeMutationBusy()) {
         remoteReloadPending = true;
-        if (hasUnsyncedOperationalChanges() && !syncInFlight) queueOperationalSync(0);
         return;
       }
       try { await loadOperationalData({ renderAfter: true }); }
-      catch (error) { console.error('Realtime reload failed', error); scheduleRealtimeReconnect(); }
-    }, Math.max(0, delay));
+      catch (error) {
+        console.error('Operational reload failed', error);
+        if (Number(error?.status) === 401) await expireSession(error.message);
+        else scheduleRealtimeReconnect();
+      }
+    }, Math.max(0, delayMs));
   }
 
   function scheduleRealtimeReconnect() {
     if (!authSession || realtimeReconnectTimer) return;
-    const delay = Math.min(30000, 1000 * (2 ** Math.min(realtimeReconnectAttempt, 5)));
+    const delayMs = Math.min(30000, 1000 * (2 ** Math.min(realtimeReconnectAttempt, 5)));
     realtimeReconnectAttempt += 1;
-    realtimeReconnectTimer = setTimeout(async () => {
+    realtimeReconnectTimer = setTimeout(() => {
       realtimeReconnectTimer = null;
       if (!authSession) return;
-      subscribeOperationalRealtime();
-      scheduleOperationalReload(0);
-    }, delay);
+      subscribeOperationalRealtime(true);
+    }, delayMs);
   }
 
-  function startOperationalPolling() {
-    clearInterval(realtimePollTimer);
-    realtimePollTimer = setInterval(() => {
-      if (document.visibilityState === 'visible' && navigator.onLine) scheduleOperationalReload(0);
-    }, 30000);
+  function startRealtimeFallbackMonitor() {
+    clearInterval(realtimeFallbackTimer);
+    realtimeFallbackTimer = setInterval(() => {
+      if (document.visibilityState !== 'visible' || !navigator.onLine || !authSession) return;
+      const stale = Date.now() - lastOperationalLoadAt > 5 * 60 * 1000;
+      if (realtimeStatus !== 'SUBSCRIBED' || stale) scheduleOperationalReload(0);
+    }, 120000);
   }
 
-  function subscribeOperationalRealtime() {
+  function subscribeOperationalRealtime(force = false) {
     if (!supabaseClient || !authSession) return;
-    if (realtimeChannel) supabaseClient.removeChannel(realtimeChannel);
+    if (!force && realtimeChannel && ['SUBSCRIBED', 'SUBSCRIBING'].includes(realtimeStatus)) return;
+
+    const reconnecting = force || realtimeReconnectAttempt > 0;
+    const generation = ++realtimeGeneration;
+    const previous = realtimeChannel;
+    realtimeChannel = null;
+    if (previous) supabaseClient.removeChannel(previous).catch(() => {});
+
+    realtimeStatus = 'SUBSCRIBING';
     const channel = supabaseClient
-      .channel(`erp-records-${authSession.user.id}-${Date.now()}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'erp_records' }, () => scheduleOperationalReload(40));
+      .channel(`erp-records-${authSession.user.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'erp_records' }, applyRealtimePayload);
     realtimeChannel = channel;
     channel.subscribe(status => {
-      if (realtimeChannel !== channel) return;
+      if (generation !== realtimeGeneration || realtimeChannel !== channel) return;
+      realtimeStatus = status;
       if (status === 'SUBSCRIBED') {
         realtimeReconnectAttempt = 0;
         clearTimeout(realtimeReconnectTimer);
         realtimeReconnectTimer = null;
-        startOperationalPolling();
-        scheduleOperationalReload(0);
+        startRealtimeFallbackMonitor();
+        if (reconnecting) scheduleOperationalReload(0);
       } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
         console.warn('Supabase Realtime channel status:', status);
         scheduleRealtimeReconnect();
@@ -878,84 +1222,163 @@
 
   function stopOperationalRealtime() {
     clearTimeout(realtimeReloadTimer);
+    clearTimeout(realtimeRenderTimer);
     clearTimeout(syncTimer);
-    clearTimeout(syncRetryTimer);
+    syncTimer = null;
     clearTimeout(realtimeReconnectTimer);
-    clearInterval(realtimePollTimer);
+    clearInterval(realtimeFallbackTimer);
     realtimeReconnectTimer = null;
-    realtimePollTimer = null;
+    realtimeFallbackTimer = null;
     realtimeReconnectAttempt = 0;
-    if (realtimeChannel && supabaseClient) supabaseClient.removeChannel(realtimeChannel);
+    realtimeStatus = 'IDLE';
+    realtimeGeneration += 1;
+    if (realtimeChannel && supabaseClient) supabaseClient.removeChannel(realtimeChannel).catch(() => {});
     realtimeChannel = null;
+    pendingRealtimePayloads = [];
     operationalDataReady = false;
     lastSyncedBusiness = null;
     operationalRecordVersions = new Map();
     itemWorkflowLocks.clear();
+    operationalMutationLocks.clear();
+    const waiters = syncWaiters.splice(0);
+    settleSyncWaiters(waiters, new Error('The session ended before synchronization completed.'));
   }
 
   async function syncProfiles() {
     if (!supabaseClient || !authSession) return;
-    const { data, error } = await supabaseClient.from('profiles').select('id,full_name,email,role,status,must_change_password,created_by,invited_at,activated_at,created_at').order('created_at', { ascending: true });
-    if (error) throw error;
-    state.users = (data || []).map(row => ({ id: row.id, name: row.full_name, email: row.email, role: row.role, status: titleCase(row.status), mustChangePassword: Boolean(row.must_change_password), createdBy: row.created_by || '', invitedAt: row.invited_at, activatedAt: row.activated_at, createdAt: row.created_at }));
+    await ensureFreshSession();
+    let result = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      result = await withTimeout(
+        supabaseClient
+          .from('profiles')
+          .select('id,full_name,email,role,status,must_change_password,created_by,invited_at,activated_at,created_at')
+          .order('created_at', { ascending: true }),
+        15000,
+        'User profile loading timed out.',
+      );
+      if (!result.error || attempt === 2 || !/timeout|network|fetch|429|5\d\d/i.test(String(result.error.message || ''))) break;
+      await delay(300 * (2 ** attempt));
+    }
+    if (result?.error) throw result.error;
+    state.users = (result?.data || []).map(row => ({ id: row.id, name: row.full_name, email: row.email, role: row.role, status: titleCase(row.status), mustChangePassword: Boolean(row.must_change_password), createdBy: row.created_by || '', invitedAt: row.invited_at, activatedAt: row.activated_at, createdAt: row.created_at }));
     currentProfile = state.users.find(user => user.id === authSession.user.id) || null;
-    saveState();
+    saveUiPreferences();
   }
 
   function titleCase(value = '') { return value ? value[0].toUpperCase() + value.slice(1).toLowerCase() : ''; }
 
+  function isAuthenticationFailure(error) {
+    return Number(error?.status) === 401 || /invalid login|invalid or expired|session|jwt|refresh token|not authenticated/i.test(String(error?.message || ''));
+  }
+
+  async function prepareAuthenticatedSession(nextSession) {
+    if (!nextSession?.user?.id) throw new Error('The authenticated session is unavailable.');
+    authSession = nextSession;
+    if (authenticatedStartupPromise) return authenticatedStartupPromise;
+    authenticatedStartupPromise = (async () => {
+      await syncProfiles();
+      if (!currentProfile || currentProfile.status !== 'Active') {
+        throw new Error('This account is not active. Contact the Super Admin.');
+      }
+      if (currentProfile.mustChangePassword) {
+        passwordFlow = 'forced';
+        authView = 'set-password';
+        stopOperationalRealtime();
+        return { passwordChangeRequired: true };
+      }
+      if (!operationalDataReady) await initialiseOperationalData();
+      return { passwordChangeRequired: false };
+    })();
+    try { return await authenticatedStartupPromise; }
+    finally { authenticatedStartupPromise = null; }
+  }
+
+  async function handleAuthStateChange(event, nextSession) {
+    if (event === 'TOKEN_REFRESHED') {
+      authSession = nextSession;
+      return;
+    }
+    if (!nextSession || event === 'SIGNED_OUT') {
+      authSession = null;
+      currentProfile = null;
+      authenticatedStartupPromise = null;
+      stopOperationalRealtime();
+      if (authInitialized) render();
+      return;
+    }
+
+    if (authSession?.user?.id === nextSession.user?.id && operationalDataReady && event === 'INITIAL_SESSION') {
+      authSession = nextSession;
+      return;
+    }
+
+    try {
+      await prepareAuthenticatedSession(nextSession);
+      if (authInitialized) render();
+    } catch (error) {
+      console.error('Authentication state processing failed', error);
+      if (isAuthenticationFailure(error)) {
+        await expireSession(error.message);
+      } else {
+        // Keep the persisted Supabase session intact. A reload or a new sign-in attempt can retry startup.
+        authSession = null;
+        currentProfile = null;
+        stopOperationalRealtime();
+        authMessage = `ERROR:${error.message || 'Unable to connect to the ERP database. Try again.'}`;
+        if (authInitialized) render();
+      }
+    }
+  }
+
   async function initialiseAuthentication() {
     renderAuthLoading();
     try {
-      const response = await fetch('/api/config', { cache: 'no-store' });
-      const config = await response.json().catch(() => ({}));
+      const { response, body: config } = await requestJson('/api/config', { cache: 'no-store' }, {
+        retries: 2,
+        timeoutMs: 15000,
+      });
       if (!response.ok) throw new Error(config.error || 'Supabase configuration is unavailable.');
-      appConfig = config; setupRequired = Boolean(config.setupRequired);
+      appConfig = config;
+      setupRequired = Boolean(config.setupRequired);
       if (config.sharedDataReady === false) throw new Error('Shared ERP database is not ready. Run supabase/003_shared_operational_data.sql in Supabase SQL Editor.');
+      if (config.stabilityMigrationReady === false) throw new Error('ERP stability migration is not ready. Run supabase/004_stability_performance.sql in Supabase SQL Editor.');
       if (!window.supabase?.createClient) throw new Error('Supabase client library did not load. Check the internet connection.');
-      supabaseClient = window.supabase.createClient(config.supabaseUrl, config.supabasePublishableKey, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
-      const { data, error } = await supabaseClient.auth.getSession();
+
+      supabaseClient = window.supabase.createClient(config.supabaseUrl, config.supabasePublishableKey, {
+        auth: {
+          persistSession: true,
+          autoRefreshToken: true,
+          detectSessionInUrl: true,
+          storageKey: 'profile-solutions-factory-erp-auth',
+        },
+      });
+
+      authStateSubscription?.unsubscribe?.();
+      const { data: listenerData } = supabaseClient.auth.onAuthStateChange((event, nextSession) => {
+        authTransitionChain = authTransitionChain
+          .then(() => handleAuthStateChange(event, nextSession))
+          .catch(error => console.error('Queued authentication transition failed', error));
+      });
+      authStateSubscription = listenerData?.subscription || null;
+
+      const { data, error } = await withTimeout(
+        supabaseClient.auth.getSession(),
+        15000,
+        'Unable to restore the saved session. Check the network connection.',
+      );
       if (error) throw error;
       authSession = data.session;
-      if (authSession) {
-        await syncProfiles();
-        if (currentProfile?.status !== 'Active') {
-          await supabaseClient.auth.signOut();
-          authSession = null; currentProfile = null;
-          authMessage = 'ERROR:This account is not active. Contact the Super Admin.';
-        } else if (currentProfile?.mustChangePassword) {
-          passwordFlow = 'forced'; authView = 'set-password';
-        } else {
-          await initialiseOperationalData();
-        }
-      }
+      if (authSession) await prepareAuthenticatedSession(authSession);
       authInitialized = true;
       render();
-      supabaseClient.auth.onAuthStateChange((event, nextSession) => {
-        setTimeout(async () => {
-          authSession = nextSession;
-          if (nextSession) {
-            try {
-              await syncProfiles();
-              if (currentProfile?.status !== 'Active') {
-                await supabaseClient.auth.signOut(); authSession = null; currentProfile = null;
-                authMessage = 'ERROR:This account is not active. Contact the Super Admin.';
-              } else if (currentProfile?.mustChangePassword) {
-                passwordFlow = 'forced'; authView = 'set-password';
-              } else if (!operationalDataReady) {
-                await initialiseOperationalData();
-              }
-            } catch (error) { console.error('Profile sync failed', error); }
-          } else {
-            currentProfile = null;
-            stopOperationalRealtime();
-          }
-          if (authInitialized) render();
-        }, 0);
-      });
     } catch (error) {
-      authInitialized = true; authSession = null; currentProfile = null; setupRequired = false;
-      authMessage = `ERROR:${error.message}`; render();
+      authInitialized = true;
+      authSession = null;
+      currentProfile = null;
+      setupRequired = false;
+      authMessage = `ERROR:${error.message}`;
+      render();
     }
   }
 
@@ -1017,7 +1440,10 @@
       document.getElementById('sidebar').classList.remove('open');
       renderPage(currentRoute);
     }));
-    document.addEventListener('click', globalClickHandler, { once: true });
+    if (!globalClickListenerInstalled) {
+      document.addEventListener('click', globalClickHandler);
+      globalClickListenerInstalled = true;
+    }
     document.querySelectorAll('[data-action="logout"]').forEach(btn => btn.addEventListener('click', logout));
     document.querySelectorAll('[data-action="toggle-sidebar"]').forEach(btn => btn.addEventListener('click', () => document.getElementById('sidebar').classList.toggle('open')));
     document.querySelectorAll('[data-action="collapse-sidebar"]').forEach(btn => btn.addEventListener('click', toggleSidebarCollapse));
@@ -1051,28 +1477,32 @@
       document.getElementById('profile-menu')?.classList.remove('open');
       document.querySelector('[data-action="profile-menu"]')?.setAttribute('aria-expanded','false');
     }
-    document.addEventListener('click', globalClickHandler, { once: true });
   }
 
   async function logout() {
     audit('LOGOUT', 'Authentication', 'User signed out', getCurrentUser()?.id);
-    saveState();
-    await flushOperationalSync();
+    await saveState().catch(error => console.warn('Logout audit could not be saved', error));
     stopOperationalRealtime();
-    await supabaseClient?.auth.signOut();
+    await supabaseClient?.auth.signOut().catch(() => {});
     authSession = null; currentProfile = null; currentRoute = 'dashboard'; authView = 'login'; render();
   }
   function toggleSidebarCollapse() {
     state.settings.sidebarCollapsed = !state.settings.sidebarCollapsed;
-    saveState(); renderAppShell();
+    saveUiPreferences(); renderAppShell();
   }
   function toggleTheme() {
-    state.settings.theme = state.settings.theme === 'dark' ? 'light' : 'dark'; saveState(); renderAppShell();
+    state.settings.theme = state.settings.theme === 'dark' ? 'light' : 'dark'; saveUiPreferences(); renderAppShell();
   }
-  function markAllRead() {
+  async function markAllRead() {
     const user = getCurrentUser();
     state.notifications.forEach(n => { if (n.userId === user.id) n.read = true; });
-    saveState(); renderAppShell();
+    try {
+      await saveState();
+      renderAppShell();
+    } catch (error) {
+      toast('Notification update failed', error.message, 'error');
+      renderAppShell();
+    }
   }
 
   function setPageTitle(title, subtitle) {
@@ -1112,9 +1542,18 @@
     const el = document.getElementById('notification-list');
     if (!el) return;
     el.innerHTML = list.length ? list.map(n => `<button class="notification-item ${n.read?'':'unread'}" data-notification-id="${n.id}"><span class="activity-icon">${n.type==='Approval'?'✓':n.type==='Delay'?'!':'♢'}</span><span><strong>${esc(n.title)}</strong><p>${esc(n.message)}</p><time>${fmtDate(n.createdAt,true)}</time></span></button>`).join('') : `<div class="empty-state"><div class="empty-icon">♢</div><h3>No notifications</h3><p>You are all caught up.</p></div>`;
-    el.querySelectorAll('[data-notification-id]').forEach(btn => btn.onclick = () => {
-      const n = state.notifications.find(x=>x.id===btn.dataset.notificationId); if (n) n.read=true; saveState(); renderAppShell();
-      if (n?.entityId && itemById(n.entityId)) setTimeout(()=>{ currentRoute='production'; renderPage('production'); openItemDetail(n.entityId); },0);
+    el.querySelectorAll('[data-notification-id]').forEach(btn => btn.onclick = async () => {
+      const n = state.notifications.find(x => x.id === btn.dataset.notificationId);
+      if (!n) return;
+      n.read = true;
+      try {
+        await saveState();
+        renderAppShell();
+        if (n.entityId && itemById(n.entityId)) setTimeout(() => { currentRoute = 'production'; renderPage('production'); openItemDetail(n.entityId); }, 0);
+      } catch (error) {
+        toast('Notification update failed', error.message, 'error');
+        renderAppShell();
+      }
     });
   }
 
@@ -1224,7 +1663,21 @@
     if(document.getElementById('add-project')) document.getElementById('add-project').onclick=()=>openProjectForm();
   }
   function bindProjectRowActions(){document.querySelectorAll('[data-view-project]').forEach(b=>b.onclick=()=>openProjectDetail(b.dataset.viewProject));document.querySelectorAll('[data-edit-project]').forEach(b=>b.onclick=()=>openProjectForm(projectById(b.dataset.editProject)));document.querySelectorAll('[data-delete-project]').forEach(b=>b.onclick=()=>deleteProject(b.dataset.deleteProject));}
-  function deleteProject(id){if(!requireRole('ADMIN'))return;const p=projectById(id);if(!p)return;if(!confirm(`Delete ${p.name} and all of its production items, shortages and issues?`))return;const itemIds=new Set(state.items.filter(i=>i.projectId===id).map(i=>i.id));state.projects=state.projects.filter(x=>x.id!==id);state.items=state.items.filter(i=>i.projectId!==id);state.shortages=state.shortages.filter(x=>x.projectId!==id&&!itemIds.has(x.itemId));state.issues=state.issues.filter(x=>x.projectId!==id&&!itemIds.has(x.itemId));audit('DELETE','Projects',`Deleted project ${p.name} and its operational records`,id);saveState();renderProjects();toast('Project deleted');}
+  async function deleteProject(id){
+    if(!requireRole('ADMIN'))return;
+    const p=projectById(id);if(!p)return;
+    if(!confirm(`Delete ${p.name} and all of its production items, shortages and issues?`))return;
+    await withOperationalMutationLock(`project-delete:${id}`, null, async()=>{
+      const itemIds=new Set(state.items.filter(i=>i.projectId===id).map(i=>i.id));
+      state.projects=state.projects.filter(x=>x.id!==id);
+      state.items=state.items.filter(i=>i.projectId!==id);
+      state.shortages=state.shortages.filter(x=>x.projectId!==id&&!itemIds.has(x.itemId));
+      state.issues=state.issues.filter(x=>x.projectId!==id&&!itemIds.has(x.itemId));
+      audit('DELETE','Projects',`Deleted project ${p.name} and its operational records`,id);
+      try{await saveState();renderProjects();toast('Project deleted');}
+      catch(error){renderProjects();toast('Delete failed',error.message,'error');}
+    });
+  }
 
   function openProjectForm(project=null) {
     if(!requireRole('ADMIN','MANAGER'))return;
@@ -1247,11 +1700,20 @@
       </div>
       <div class="form-group"><label>Assigned Executives</label><div class="grid grid-2">${executives.length?executives.map(u=>`<label class="input-row small"><input type="checkbox" name="executives" value="${u.id}" style="width:auto" ${(project?.executiveIds||[]).includes(u.id)?'checked':''}> ${esc(u.name)}</label>`).join(''):'<span class="muted small">Create Executive users first.</span>'}</div></div>
     </form>`, `<button class="btn btn-secondary" data-close-modal>Cancel</button><button class="btn btn-primary" id="save-project">Save Project</button>`);
-    document.getElementById('save-project').onclick=()=>{
+    document.getElementById('save-project').onclick=async event=>{
       const form=document.getElementById('project-form');if(!form.reportValidity())return;const fd=new FormData(form);
       const data={name:String(fd.get('name')).trim(),code:String(fd.get('code')||'').trim()||`PRJ-${String(state.projects.length+1).padStart(4,'0')}`,client:String(fd.get('client')||'').trim(),site:String(fd.get('site')||'').trim(),jobNumber:String(fd.get('jobNumber')||'').trim(),status:String(fd.get('status')),startDate:String(fd.get('startDate')||''),targetDate:String(fd.get('targetDate')||''),managerId:String(fd.get('managerId')||''),executiveIds:fd.getAll('executives').map(String),priority:String(fd.get('priority')||'Medium')};
-      if(project){Object.assign(project,data,{updatedAt:nowISO()});audit('UPDATE','Projects',`Updated project ${data.name}`,project.id);}else{const p={id:uid('PRJ'),...data,createdAt:nowISO()};state.projects.push(p);audit('CREATE','Projects',`Created project ${data.name}`,p.id);if(p.managerId)notify(p.managerId,'Project assigned',`${p.name} has been assigned to you.`,'Assignment',p.id);p.executiveIds.forEach(id=>notify(id,'Work assigned',`${p.name} has been assigned to you.`,'Assignment',p.id));}
-      saveState();closeModal();renderProjects();toast('Project saved','Project information has been updated.');
+      const lockKey=`project-save:${project?.id||data.code}`;
+      await withOperationalMutationLock(lockKey,event.currentTarget,async()=>{
+        setFormBusy(form,true);
+        try{
+          if(project){Object.assign(project,data,{updatedAt:nowISO()});audit('UPDATE','Projects',`Updated project ${data.name}`,project.id);}
+          else{const p={id:uid('PRJ'),...data,createdAt:nowISO()};state.projects.push(p);audit('CREATE','Projects',`Created project ${data.name}`,p.id);if(p.managerId)notify(p.managerId,'Project assigned',`${p.name} has been assigned to you.`,'Assignment',p.id);p.executiveIds.forEach(id=>notify(id,'Work assigned',`${p.name} has been assigned to you.`,'Assignment',p.id));}
+          await saveState();
+          closeModal();renderProjects();toast('Project saved','Project information has been updated.');
+        }catch(error){toast('Project save failed',error.message,'error');}
+        finally{setFormBusy(form,false);}
+      });
     };
   }
 
@@ -1285,7 +1747,26 @@
     const projects=assignedProjects();
     if(!projects.length)return toast('Create a project first','Production items must belong to a project.','warning');
     openModal(item?'Edit Production Item':'Add Production Item',`<form id="item-form"><div class="form-grid"><div class="form-group"><label>Project *</label><select name="projectId" required>${projects.map(p=>`<option value="${p.id}" ${item?.projectId===p.id?'selected':''}>${esc(p.name)}</option>`).join('')}</select></div><div class="form-group"><label>Quantity</label><input name="quantity" type="number" min="0" step="any" value="${item?.quantity??0}"></div><div class="form-group" style="grid-column:1/-1"><label>Item name *</label><textarea name="itemName" required placeholder="Enter complete item description">${esc(item?.itemName||'')}</textarea></div><div class="form-group"><label>BOM number</label><input name="bomNumber" value="${esc(item?.bomNumber||'')}"></div><div class="form-group"><label>Job number</label><input name="jobNumber" value="${esc(item?.jobNumber||'')}"></div><div class="form-group"><label>Size</label><input name="size" value="${esc(item?.size||'')}"></div>${item?`<div class="form-group"><label>Current stage</label><input value="${esc(STAGES[item.currentStage])}" disabled><div class="help-text">Use the stage workflow controls to move this item.</div></div>`:`<div class="form-group"><label>Current stage</label><select name="currentStage">${STAGES.map((s,i)=>`<option value="${i}">${esc(s)}</option>`).join('')}</select></div>`}</div></form>`,`<button class="btn btn-secondary" data-close-modal>Cancel</button><button class="btn btn-primary" id="save-item">${item?'Save Changes':'Add Item'}</button>`);
-    document.getElementById('save-item').onclick=()=>{const f=document.getElementById('item-form');if(!f.reportValidity())return;const fd=new FormData(f),p=projectById(String(fd.get('projectId')));if(item){Object.assign(item,{projectId:p.id,itemName:String(fd.get('itemName')).trim(),rawItemName:String(fd.get('itemName')).trim(),site:p.site,size:String(fd.get('size')||''),quantity:number(fd.get('quantity')),quantityVerified:true,bomNumber:String(fd.get('bomNumber')||''),jobNumber:String(fd.get('jobNumber')||p.jobNumber||''),updatedAt:nowISO()});item.history=item.history||[];item.history.push(historyEvent(item,'Item Details Updated',item.status,'Production item master details updated.'));audit('UPDATE','Production',`Updated production item ${item.itemName}`,item.id);}else{const idx=Number(fd.get('currentStage'));const i={id:uid('ITM'),projectId:p.id,itemName:String(fd.get('itemName')).trim(),rawItemName:String(fd.get('itemName')).trim(),site:p.site,size:String(fd.get('size')||''),quantity:number(fd.get('quantity')),quantityVerified:true,bomNumber:String(fd.get('bomNumber')||''),jobNumber:String(fd.get('jobNumber')||p.jobNumber||''),currentStage:idx,currentStageName:STAGES[idx],status:'In Progress',approvalStatus:'',shortages:'',remarks:'',createdAt:nowISO(),updatedAt:nowISO(),history:[{id:uid('HIS'),stageIndex:idx,stageName:STAGES[idx],action:'Created',status:'In Progress',updatedBy:getCurrentUser().id,updatedByName:getCurrentUser().name,date:nowISO(),remarks:'Production item created manually.',attachments:[]}]};state.items.push(i);audit('CREATE','Production',`Created production item ${i.itemName}`,i.id);}saveState();closeModal();renderProduction();toast(item?'Item updated':'Item created','Production item saved successfully.');};
+    document.getElementById('save-item').onclick=async event=>{
+      const f=document.getElementById('item-form');if(!f.reportValidity())return;
+      const fd=new FormData(f),p=projectById(String(fd.get('projectId')));if(!p)return toast('Project unavailable','Reload the data and try again.','error');
+      await withOperationalMutationLock(`item-save:${item?.id||String(fd.get('itemName')).trim()}`,event.currentTarget,async()=>{
+        setFormBusy(f,true);
+        try{
+          if(item){
+            Object.assign(item,{projectId:p.id,itemName:String(fd.get('itemName')).trim(),rawItemName:String(fd.get('itemName')).trim(),site:p.site,size:String(fd.get('size')||''),quantity:number(fd.get('quantity')),quantityVerified:true,bomNumber:String(fd.get('bomNumber')||''),jobNumber:String(fd.get('jobNumber')||p.jobNumber||''),updatedAt:nowISO()});
+            item.history=item.history||[];item.history.push(historyEvent(item,'Item Details Updated',item.status,'Production item master details updated.'));
+            audit('UPDATE','Production',`Updated production item ${item.itemName}`,item.id);
+          }else{
+            const idx=Number(fd.get('currentStage'));const i={id:uid('ITM'),projectId:p.id,itemName:String(fd.get('itemName')).trim(),rawItemName:String(fd.get('itemName')).trim(),site:p.site,size:String(fd.get('size')||''),quantity:number(fd.get('quantity')),quantityVerified:true,bomNumber:String(fd.get('bomNumber')||''),jobNumber:String(fd.get('jobNumber')||p.jobNumber||''),currentStage:idx,currentStageName:STAGES[idx],status:'In Progress',approvalStatus:'',shortages:'',remarks:'',createdAt:nowISO(),updatedAt:nowISO(),history:[{id:uid('HIS'),stageIndex:idx,stageName:STAGES[idx],action:'Created',status:'In Progress',updatedBy:getCurrentUser().id,updatedByName:getCurrentUser().name,date:nowISO(),remarks:'Production item created manually.',attachments:[]}]};
+            state.items.push(i);audit('CREATE','Production',`Created production item ${i.itemName}`,i.id);
+          }
+          await saveState();
+          closeModal();renderProduction();toast(item?'Item updated':'Item created','Production item saved successfully.');
+        }catch(error){toast('Production item save failed',error.message,'error');}
+        finally{setFormBusy(f,false);}
+      });
+    };
   }
 
   function openItemDetail(id) {
@@ -1315,7 +1796,19 @@
     };
     bindAttachmentLinks();
   }
-  function deleteItem(id){if(!requireRole('ADMIN','MANAGER'))return;const item=itemById(id);if(!item)return;if(!confirm(`Delete ${item.itemName} and its complete stage history?`))return;state.items=state.items.filter(i=>i.id!==id);state.shortages=state.shortages.filter(s=>s.itemId!==id);state.issues=state.issues.filter(x=>x.itemId!==id);audit('DELETE','Production',`Deleted production item ${item.itemName}`,id);saveState();closeModal();renderProduction();toast('Item deleted');}
+  async function deleteItem(id){
+    if(!requireRole('ADMIN','MANAGER'))return;
+    const item=itemById(id);if(!item)return;
+    if(!confirm(`Delete ${item.itemName} and its complete stage history?`))return;
+    await withOperationalMutationLock(`item-delete:${id}`,null,async()=>{
+      state.items=state.items.filter(i=>i.id!==id);
+      state.shortages=state.shortages.filter(s=>s.itemId!==id);
+      state.issues=state.issues.filter(x=>x.itemId!==id);
+      audit('DELETE','Production',`Deleted production item ${item.itemName}`,id);
+      try{await saveState();closeModal();renderProduction();toast('Item deleted');}
+      catch(error){renderProduction();toast('Delete failed',error.message,'error');}
+    });
+  }
 
   function itemHistoryHtml(item){const h=[...(item.history||[])].reverse();return h.length?`<div class="activity-list">${h.map(x=>`<div class="activity-item"><div class="activity-icon">${x.status==='Approved'?'✓':x.status==='Rejected'?'!':'⚙'}</div><div class="activity-main"><strong>${esc(x.stageName)} • ${esc(x.action)}</strong><span>${esc(x.remarks||'No remarks')}<br>${esc(x.updatedByName||'Unknown user')} • ${esc(x.status||'')}</span>${(x.attachments||[]).length?`<div>${x.attachments.map(a=>`<button class="file-chip" data-file-id="${a.id}" data-item-id="${item.id}">▤ ${esc(a.name)}</button>`).join('')}</div>`:''}</div><div class="activity-time">${fmtDate(x.date,true)}</div></div>`).join('')}</div>`:emptyState('◷','No stage history','Updates will appear here.');}
   function itemDetailsHtml(i,p){return `<div class="grid grid-2"><div>${detailRow('Project',p?.name)}${detailRow('Site',i.site||p?.site)}${detailRow('BOM Number',i.bomNumber)}${detailRow('Job Number',i.jobNumber)}${detailRow('Size',i.size)}${detailRow('Quantity',fmtNumber(i.quantity))}</div><div>${detailRow('Current Stage',STAGES[i.currentStage])}${detailRow('Status',i.status)}${detailRow('Quantity Verified',i.quantityVerified?'Yes':'No')}${detailRow('Shortages',i.shortages||'None')}${detailRow('Created',fmtDate(i.createdAt,true))}${detailRow('Updated',fmtDate(i.updatedAt,true))}</div></div>`;}
@@ -1433,9 +1926,26 @@
     page.innerHTML=`${pageToolbar('Shortages & Issues','Report and resolve material shortages affecting production.','<button class="btn btn-primary" id="add-shortage">+ Report Shortage</button>')}
       <div class="grid grid-4">${kpi('⚠','Open Shortages',shortages.filter(s=>s.status==='Open').length,'Requires material action')}${kpi('!','Critical',shortages.filter(s=>s.severity==='Critical'&&s.status!=='Resolved').length,'Immediate escalation')}${kpi('✓','Resolved',shortages.filter(s=>s.status==='Resolved').length,'Closed records')}${kpi('∑','Shortage Qty',fmtNumber(shortages.filter(s=>s.status!=='Resolved').reduce((a,s)=>a+number(s.shortageQty),0)),'Across visible projects')}</div>
       <section class="card table-card" style="margin-top:18px"><div class="table-wrap"><table><thead><tr><th>Material</th><th>Project / Item</th><th>Required</th><th>Available</th><th>Shortage</th><th>Severity</th><th>Status</th><th>Action</th></tr></thead><tbody>${shortages.length?shortages.map(s=>`<tr><td><strong>${esc(s.material)}</strong><div class="small muted">${esc(s.remarks||'')}</div></td><td>${esc(projectById(s.projectId)?.name||'—')}<div class="small muted">${esc(itemById(s.itemId)?.itemName||'General project shortage')}</div></td><td>${fmtNumber(s.requiredQty)} ${esc(s.uom||'')}</td><td>${fmtNumber(s.availableQty)} ${esc(s.uom||'')}</td><td><strong class="text-danger">${fmtNumber(s.shortageQty)}</strong></td><td>${statusChip(s.severity)}</td><td>${statusChip(s.status)}</td><td><div class="table-actions">${s.status!=='Resolved'&&can('ADMIN','MANAGER')?`<button class="btn btn-success btn-sm" data-resolve-shortage="${s.id}">Resolve</button>`:''}${can('ADMIN')?`<button class="btn btn-danger btn-sm" data-delete-shortage="${s.id}">Delete</button>`:''}${s.status==='Resolved'&&!can('ADMIN')?'—':''}</div></td></tr>`).join(''):`<tr><td colspan="8">${emptyState('⚠','No shortages reported','Production teams can report material constraints here.')}</td></tr>`}</tbody></table></div></section>`;
-    document.getElementById('add-shortage').onclick=()=>openShortageForm();document.querySelectorAll('[data-resolve-shortage]').forEach(b=>b.onclick=()=>{const s=state.shortages.find(x=>x.id===b.dataset.resolveShortage);s.status='Resolved';s.resolvedAt=nowISO();audit('RESOLVE','Shortages',`Resolved shortage for ${s.material}`,s.id);saveState();renderShortages();toast('Shortage resolved');});document.querySelectorAll('[data-delete-shortage]').forEach(b=>b.onclick=()=>{if(!requireRole('ADMIN'))return;const x=state.shortages.find(s=>s.id===b.dataset.deleteShortage);if(!x||!confirm(`Delete shortage record for ${x.material}?`))return;state.shortages=state.shortages.filter(s=>s.id!==x.id);audit('DELETE','Shortages',`Deleted shortage for ${x.material}`,x.id);saveState();renderShortages();toast('Shortage deleted');});
+    document.getElementById('add-shortage').onclick=()=>openShortageForm();
+    document.querySelectorAll('[data-resolve-shortage]').forEach(b=>b.onclick=async()=>{
+      const shortage=state.shortages.find(x=>x.id===b.dataset.resolveShortage);if(!shortage)return;
+      await withOperationalMutationLock(`shortage-resolve:${shortage.id}`,b,async()=>{
+        shortage.status='Resolved';shortage.resolvedAt=nowISO();audit('RESOLVE','Shortages',`Resolved shortage for ${shortage.material}`,shortage.id);
+        try{await saveState();renderShortages();toast('Shortage resolved');}
+        catch(error){renderShortages();toast('Shortage update failed',error.message,'error');}
+      });
+    });
+    document.querySelectorAll('[data-delete-shortage]').forEach(b=>b.onclick=async()=>{
+      if(!requireRole('ADMIN'))return;const shortage=state.shortages.find(row=>row.id===b.dataset.deleteShortage);
+      if(!shortage||!confirm(`Delete shortage record for ${shortage.material}?`))return;
+      await withOperationalMutationLock(`shortage-delete:${shortage.id}`,b,async()=>{
+        state.shortages=state.shortages.filter(row=>row.id!==shortage.id);audit('DELETE','Shortages',`Deleted shortage for ${shortage.material}`,shortage.id);
+        try{await saveState();renderShortages();toast('Shortage deleted');}
+        catch(error){renderShortages();toast('Shortage delete failed',error.message,'error');}
+      });
+    });
   }
-  function openShortageForm(){if(!requireRole('ADMIN','MANAGER','EXECUTIVE'))return;const projects=assignedProjects();if(!projects.length)return toast('No project available','Create or assign a project first.','warning');openModal('Report Material Shortage',`<form id="shortage-form"><div class="form-grid"><div class="form-group"><label>Project *</label><select name="projectId" id="shortage-project" required>${projects.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></div><div class="form-group"><label>Production item</label><select name="itemId" id="shortage-item"></select></div><div class="form-group"><label>Material *</label><input name="material" required></div><div class="form-group"><label>UOM</label><input name="uom" value="Nos."></div><div class="form-group"><label>Required quantity</label><input name="requiredQty" type="number" min="0" step="any" value="0"></div><div class="form-group"><label>Available quantity</label><input name="availableQty" type="number" min="0" step="any" value="0"></div><div class="form-group"><label>Severity</label><select name="severity"><option>Low</option><option>Medium</option><option>High</option><option>Critical</option></select></div></div><div class="form-group"><label>Remarks</label><textarea name="remarks"></textarea></div></form>`,`<button class="btn btn-secondary" data-close-modal>Cancel</button><button class="btn btn-primary" id="save-shortage">Report Shortage</button>`);const fill=()=>{const pid=document.getElementById('shortage-project').value;document.getElementById('shortage-item').innerHTML='<option value="">Project level</option>'+state.items.filter(i=>i.projectId===pid).map(i=>`<option value="${i.id}">${esc(i.itemName)}</option>`).join('');};fill();document.getElementById('shortage-project').onchange=fill;document.getElementById('save-shortage').onclick=()=>{const f=document.getElementById('shortage-form');if(!f.reportValidity())return;const fd=new FormData(f),req=number(fd.get('requiredQty')),avail=number(fd.get('availableQty'));const s={id:uid('SHR'),projectId:String(fd.get('projectId')),itemId:String(fd.get('itemId')||''),material:String(fd.get('material')).trim(),requiredQty:req,availableQty:avail,shortageQty:Math.max(0,req-avail),uom:String(fd.get('uom')||''),severity:String(fd.get('severity')),status:'Open',remarks:String(fd.get('remarks')||''),reportedBy:getCurrentUser().id,createdAt:nowISO()};state.shortages.push(s);const p=projectById(s.projectId);if(p?.managerId)notify(p.managerId,'Material shortage reported',`${s.material}: shortage of ${s.shortageQty} ${s.uom}`,'Delay',s.itemId||s.id);audit('CREATE','Shortages',`Reported shortage for ${s.material}`,s.id);saveState();closeModal();renderShortages();toast('Shortage reported');};}
+  function openShortageForm(){if(!requireRole('ADMIN','MANAGER','EXECUTIVE'))return;const projects=assignedProjects();if(!projects.length)return toast('No project available','Create or assign a project first.','warning');openModal('Report Material Shortage',`<form id="shortage-form"><div class="form-grid"><div class="form-group"><label>Project *</label><select name="projectId" id="shortage-project" required>${projects.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></div><div class="form-group"><label>Production item</label><select name="itemId" id="shortage-item"></select></div><div class="form-group"><label>Material *</label><input name="material" required></div><div class="form-group"><label>UOM</label><input name="uom" value="Nos."></div><div class="form-group"><label>Required quantity</label><input name="requiredQty" type="number" min="0" step="any" value="0"></div><div class="form-group"><label>Available quantity</label><input name="availableQty" type="number" min="0" step="any" value="0"></div><div class="form-group"><label>Severity</label><select name="severity"><option>Low</option><option>Medium</option><option>High</option><option>Critical</option></select></div></div><div class="form-group"><label>Remarks</label><textarea name="remarks"></textarea></div></form>`,`<button class="btn btn-secondary" data-close-modal>Cancel</button><button class="btn btn-primary" id="save-shortage">Report Shortage</button>`);const fill=()=>{const pid=document.getElementById('shortage-project').value;document.getElementById('shortage-item').innerHTML='<option value="">Project level</option>'+state.items.filter(i=>i.projectId===pid).map(i=>`<option value="${i.id}">${esc(i.itemName)}</option>`).join('');};fill();document.getElementById('shortage-project').onchange=fill;document.getElementById('save-shortage').onclick=async event=>{const f=document.getElementById('shortage-form');if(!f.reportValidity())return;const fd=new FormData(f),req=number(fd.get('requiredQty')),avail=number(fd.get('availableQty'));const shortage={id:uid('SHR'),projectId:String(fd.get('projectId')),itemId:String(fd.get('itemId')||''),material:String(fd.get('material')).trim(),requiredQty:req,availableQty:avail,shortageQty:Math.max(0,req-avail),uom:String(fd.get('uom')||''),severity:String(fd.get('severity')),status:'Open',remarks:String(fd.get('remarks')||''),reportedBy:getCurrentUser().id,createdAt:nowISO()};await withOperationalMutationLock(`shortage-create:${shortage.id}`,event.currentTarget,async()=>{setFormBusy(f,true);try{state.shortages.push(shortage);const project=projectById(shortage.projectId);if(project?.managerId)notify(project.managerId,'Material shortage reported',`${shortage.material}: shortage of ${shortage.shortageQty} ${shortage.uom}`,'Delay',shortage.itemId||shortage.id);audit('CREATE','Shortages',`Reported shortage for ${shortage.material}`,shortage.id);await saveState();closeModal();renderShortages();toast('Shortage reported');}catch(error){toast('Shortage report failed',error.message,'error');}finally{setFormBusy(f,false);}});};}
 
   function ensureImportInput() {
     let input = document.getElementById('excel-file-input');
@@ -1665,8 +2175,8 @@
       if(importedBundles.length){
         const user=getCurrentUser();
         const auditRecord={id:uid('AUD'),action:'IMPORT',module:'Import',details:`Imported ${importedBundles.length} production rows from ${importBuffer.fileName}; ${refreshedValidation.failed.length+databaseFailures.length} row(s) failed`,entityId:'',userId:user?.id||'SYSTEM',userName:user?.name||'System',createdAt:nowISO()};
-        await callDataApi('sync',{changes:{audit:{upsert:[auditRecord],delete:[]}}});
-        await loadOperationalData();
+        state.audit.unshift(auditRecord);
+        await saveState();
       }
 
       const importedProjectIds=new Set(importedBundles.map(x=>x.project.id));
@@ -1682,6 +2192,7 @@
     }finally{
       bulkImportInFlight=false;
       if(button&&document.body.contains(button)){button.disabled=false;button.textContent=originalText;button.removeAttribute('aria-busy');}
+      drainRealtimePayloads();
       if(remoteReloadPending){remoteReloadPending=false;scheduleOperationalReload();}
     }
   }
@@ -1697,7 +2208,18 @@
     if(document.getElementById('download-error-report'))document.getElementById('download-error-report').onclick=downloadErrorReport;
   }
 
-  function deleteUploadedData(){if(!requireRole('ADMIN'))return;if(!confirm('Delete all uploaded projects, production items, shortages, issues and operational notifications? User accounts and settings will remain.'))return;if(!confirm('Final confirmation: permanently delete all uploaded operational data?'))return;const counts={projects:state.projects.length,items:state.items.length};state.projects=[];state.items=[];state.shortages=[];state.issues=[];state.notifications=[];importBuffer=null;audit('DELETE','Import',`Deleted all uploaded data (${counts.projects} projects and ${counts.items} items)`);saveState();renderImport();toast('Uploaded data deleted','The ERP is ready for a fresh template upload.');}
+  async function deleteUploadedData(){
+    if(!requireRole('ADMIN'))return;
+    if(!confirm('Delete all uploaded projects, production items, shortages, issues and operational notifications? User accounts and settings will remain.'))return;
+    if(!confirm('Final confirmation: permanently delete all uploaded operational data?'))return;
+    await withOperationalMutationLock('delete-all-operational-data',document.getElementById('delete-uploaded-data'),async()=>{
+      const counts={projects:state.projects.length,items:state.items.length};
+      state.projects=[];state.items=[];state.shortages=[];state.issues=[];state.notifications=[];importBuffer=null;
+      audit('DELETE','Import',`Deleted all uploaded data (${counts.projects} projects and ${counts.items} items)`);
+      try{await saveState();renderImport();toast('Uploaded data deleted','The ERP is ready for a fresh template upload.');}
+      catch(error){renderImport();toast('Delete failed',error.message,'error');}
+    });
+  }
   function downloadErrorReport(){const rows=[...(importBuffer?.failed||[]),...(importBuffer?.warnings||[]),...(importBuffer?.databaseFailures||[])];const csv=['Source Row,Project,Item,Stage,Errors,Warnings',...rows.map(r=>[r.sourceRow,r.projectName,r.itemName,r.statusRaw,r.errors?.join('; ')||'',r.warnings?.join('; ')||''].map(csvCell).join(','))].join('\n');downloadBlob('\uFEFF'+csv,'factory-erp-import-results.csv','text/csv;charset=utf-8');}
   function csvCell(v){const s=String(v??'');return /[",\n]/.test(s)?`"${s.replace(/"/g,'""')}"`:s;}
   function downloadBlob(content,name,type){const b=new Blob([content],{type}),url=URL.createObjectURL(b),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
@@ -1710,7 +2232,7 @@
   }
   function getReportData(){const type=document.getElementById('report-type').value,pid=document.getElementById('report-project').value,allowed=new Set(assignedProjects().map(p=>p.id));if(type==='projects')return{title:'Project Summary Report',headers:['Project Code','Project Name','Client','Site','Job Number','Manager','Target Date','Completion %','Status'],rows:assignedProjects().filter(p=>!pid||p.id===pid).map(p=>[p.code,p.name,p.client,p.site,p.jobNumber,userById(p.managerId)?.name||'',p.targetDate,projectCompletion(p.id),p.status])};if(type==='stage')return{title:'Stage-wise Production Report',headers:['Stage','Item Count','Total Quantity','Delayed Items'],rows:STAGES.map((s,idx)=>{const arr=visibleItems().filter(i=>(!pid||i.projectId===pid)&&i.currentStage===idx);return[s,arr.length,arr.reduce((a,i)=>a+number(i.quantity),0),arr.filter(i=>i.status==='Delayed').length]})};if(type==='delay'){const items=visibleItems().filter(i=>(!pid||i.projectId===pid)&&(i.status==='Delayed'||projectById(i.projectId)?.status==='Delayed'));return{title:'Production Delay Report',headers:['Project','Item','BOM','Current Stage','Quantity','Shortage / Reason','Updated'],rows:items.map(i=>[projectById(i.projectId)?.name,i.itemName,i.bomNumber,STAGES[i.currentStage],i.quantity,i.shortages||i.remarks||'Delayed',i.updatedAt])};}if(type==='shortage'){const rows=state.shortages.filter(s=>allowed.has(s.projectId)&&(!pid||s.projectId===pid));return{title:'Material Shortage Report',headers:['Project','Item','Material','Required','Available','Shortage','UOM','Severity','Status','Remarks'],rows:rows.map(s=>[projectById(s.projectId)?.name,itemById(s.itemId)?.itemName||'',s.material,s.requiredQty,s.availableQty,s.shortageQty,s.uom,s.severity,s.status,s.remarks])};}const items=visibleItems().filter(i=>!pid||i.projectId===pid);return{title:'Production Items Report',headers:['Project','Item','Site','BOM Number','Job Number','Quantity','Current Stage','Progress %','Status','Updated'],rows:items.map(i=>[projectById(i.projectId)?.name,i.itemName,i.site,i.bomNumber,i.jobNumber,i.quantity,STAGES[i.currentStage],completionPercent(i),i.approvalStatus==='SUBMITTED'?'Submitted':i.status,i.updatedAt])};}
   function renderReportTable(){const d=getReportData();document.getElementById('report-title').textContent=d.title;document.getElementById('report-table').innerHTML=d.rows.length?`<table><thead><tr>${d.headers.map(h=>`<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${d.rows.map(r=>`<tr>${r.map(v=>`<td>${esc(v??'')}</td>`).join('')}</tr>`).join('')}</tbody></table>`:emptyState('▤','No report data','Adjust filters or import records first.');}
-  function exportCurrentReport(){const d=getReportData(),csv=[d.headers.map(csvCell).join(','),...d.rows.map(r=>r.map(csvCell).join(','))].join('\n');downloadBlob('\uFEFF'+csv,`${d.title.toLowerCase().replace(/[^a-z0-9]+/g,'-')}.csv`,'text/csv;charset=utf-8');audit('EXPORT','Reports',`Exported ${d.title}`);saveState();toast('Report exported');}
+  async function exportCurrentReport(){const d=getReportData(),csv=[d.headers.map(csvCell).join(','),...d.rows.map(r=>r.map(csvCell).join(','))].join('\n');downloadBlob('\uFEFF'+csv,`${d.title.toLowerCase().replace(/[^a-z0-9]+/g,'-')}.csv`,'text/csv;charset=utf-8');audit('EXPORT','Reports',`Exported ${d.title}`);try{await saveState();toast('Report exported');}catch(error){toast('Report exported','The file was downloaded, but its audit entry could not be saved.','warning');}}
 
   function renderUsers() {
     if (!requireRole('ADMIN','MANAGER')) return;
@@ -1776,12 +2298,12 @@
         if (user) {
           await callAuthAdmin('update', { userId: user.id, fullName, role, status: String(fd.get('status')) });
           audit('UPDATE','Users',`Updated ${roleLabel(role)} ${fullName}`,user.id);
-          await syncProfiles(); saveState(); closeModal(); renderUsers();
+          await syncProfiles(); await saveState(); closeModal(); renderUsers();
           toast('User updated','The user profile was updated.');
         } else {
           await callAuthAdmin('create', { fullName, email, role, temporaryPassword });
           audit('CREATE','Users',`Created ${roleLabel(role)} ${fullName} with a temporary password`);
-          await syncProfiles(); saveState(); closeModal(); renderUsers();
+          await syncProfiles(); await saveState(); closeModal(); renderUsers();
           showTemporaryCredentials(fullName, email, temporaryPassword, 'User created successfully');
         }
       } catch (error) { toast(user ? 'Update failed' : 'User creation failed', error.message, 'error'); }
@@ -1812,7 +2334,7 @@
       try {
         await callAuthAdmin('reset-password', { userId: user.id, temporaryPassword });
         audit('RESET PASSWORD','Users',`Issued a temporary password for ${user.name}`,user.id);
-        await syncProfiles(); saveState(); closeModal(); renderUsers();
+        await syncProfiles(); await saveState(); closeModal(); renderUsers();
         showTemporaryCredentials(user.name, user.email, temporaryPassword, 'Password reset completed');
       } catch (error) { toast('Password reset failed',error.message,'error'); }
       finally { setFormBusy(form, false); }
@@ -1830,7 +2352,7 @@
       state.projects.forEach(p => { if (p.managerId === id) p.managerId = ''; p.executiveIds = (p.executiveIds || []).filter(x => x !== id); });
       state.notifications = state.notifications.filter(n => n.userId !== id);
       audit('DELETE','Users',`Deleted ${roleLabel(target.role)} ${target.name}`,id);
-      await syncProfiles(); saveState(); renderUsers(); toast('User deleted');
+      await syncProfiles(); await saveState(); renderUsers(); toast('User deleted');
     } catch (error) { toast('Delete failed', error.message, 'error'); }
   }
 
@@ -1846,8 +2368,88 @@
       <div class="info-banner"><div>🔐</div><div><strong>Authentication is secured by Supabase</strong><p>Passwords are securely hashed by Supabase Auth. Super Admins and authorised Managers create temporary passwords, and users must change them at first login. Projects, production records, shortages, issues, audit entries and notifications are stored in the shared Supabase database and synchronized across authorized users.</p></div></div>
       <div class="grid grid-2"><section class="card"><div class="card-header"><div><h3>Company Configuration</h3><p>Branding and display preferences</p></div></div><div class="card-body"><form id="settings-form"><div class="form-group"><label>Company / ERP Name</label><input name="companyName" value="${esc(state.settings.companyName)}"></div><div class="form-group"><label>Factory Name</label><input name="factoryName" value="${esc(state.settings.factoryName)}"></div><div class="setting-row"><div class="setting-copy"><strong>Dark Mode</strong><span>Use dark industrial interface</span></div><button type="button" class="toggle ${state.settings.theme==='dark'?'on':''}" id="settings-theme"></button></div><button class="btn btn-primary" type="submit" style="margin-top:16px">Save Settings</button></form></div></section>
       <section class="card"><div class="card-header"><div><h3>Backup & Restore</h3><p>Protect shared ERP records</p></div></div><div class="card-body"><div class="setting-row"><div class="setting-copy"><strong>Download Full Backup</strong><span>Projects, production history, shortages and settings</span></div><button class="btn btn-secondary" id="download-backup">⇩ Backup</button></div><div class="setting-row"><div class="setting-copy"><strong>Restore Backup</strong><span>Replace shared operational data from a JSON backup</span></div><button class="btn btn-secondary" id="restore-backup">⇧ Restore</button></div><div class="setting-row"><div class="setting-copy"><strong class="text-danger">Reset All Data</strong><span>Delete all shared ERP operational records</span></div><button class="btn btn-danger" id="reset-data">Reset</button></div></div></section></div>
-      <section class="card" style="margin-top:18px"><div class="card-header"><div><h3>System Information</h3><p>Deployment characteristics</p></div></div><div class="card-body"><div class="grid grid-4">${miniMetric('Technology','HTML / CSS / JS')}${miniMetric('Authentication','Supabase Auth')}${miniMetric('Deployment','Netlify Functions')}${miniMetric('Version','10.2 Reliable Stage Sync')}</div></div></section>`;
-    document.getElementById('settings-form').onsubmit=e=>{e.preventDefault();const fd=new FormData(e.target);state.settings.companyName=String(fd.get('companyName')||BRAND.erpName);state.settings.factoryName=String(fd.get('factoryName')||BRAND.factory);audit('UPDATE','Settings','Updated company configuration');saveState();renderAppShell();toast('Settings saved');};document.getElementById('settings-theme').onclick=toggleTheme;document.getElementById('download-backup').onclick=()=>downloadBlob(JSON.stringify(state,null,2),`factory-erp-backup-${todayISO()}.json`,'application/json');document.getElementById('restore-backup').onclick=()=>document.getElementById('backup-file-input').click();const backupInput=document.getElementById('backup-file-input');backupInput.value='';backupInput.onchange=async()=>{try{const data=JSON.parse(await backupInput.files[0].text());if(!data.projects||!data.items)throw new Error('Invalid backup format');if(!confirm('Restore this backup and replace shared ERP data for every user?'))return;state={...defaultState(),...data,users:state.users};saveState();render();toast('Backup restored','Shared operational data was restored. Supabase users were not changed.');}catch(e){toast('Restore failed',e.message,'error');}};document.getElementById('reset-data').onclick=()=>{if(!confirm('This permanently deletes shared ERP operational data for every user. Continue?'))return;if(!confirm('Final confirmation: delete everything?'))return;state={...defaultState(),settings:state.settings,users:state.users};saveState();render();};
+      <section class="card" style="margin-top:18px"><div class="card-header"><div><h3>System Information</h3><p>Deployment characteristics</p></div></div><div class="card-body"><div class="grid grid-4">${miniMetric('Technology','HTML / CSS / JS')}${miniMetric('Authentication','Supabase Auth')}${miniMetric('Deployment','Netlify Functions')}${miniMetric('Version','11.0 Stability Audit')}</div></div></section>`;
+    const settingsForm = document.getElementById('settings-form');
+    settingsForm.onsubmit = async event => {
+      event.preventDefault();
+      const previousSettings = cloneJson(state.settings);
+      const fd = new FormData(settingsForm);
+      state.settings.companyName = String(fd.get('companyName') || BRAND.erpName);
+      state.settings.factoryName = String(fd.get('factoryName') || BRAND.factory);
+      audit('UPDATE', 'Settings', 'Updated company configuration');
+      setFormBusy(settingsForm, true);
+      try {
+        await saveState();
+        renderAppShell();
+        toast('Settings saved');
+      } catch (error) {
+        state.settings = previousSettings;
+        saveUiPreferences();
+        renderAppShell();
+        toast('Settings update failed', error.message, 'error');
+      } finally {
+        setFormBusy(settingsForm, false);
+      }
+    };
+    document.getElementById('settings-theme').onclick = toggleTheme;
+    document.getElementById('download-backup').onclick = () => downloadBlob(
+      JSON.stringify(state, null, 2),
+      `factory-erp-backup-${todayISO()}.json`,
+      'application/json',
+    );
+    document.getElementById('restore-backup').onclick = () => document.getElementById('backup-file-input').click();
+    const backupInput = document.getElementById('backup-file-input');
+    backupInput.value = '';
+    backupInput.onchange = async event => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      const control = document.getElementById('restore-backup');
+      await withOperationalMutationLock('backup-restore', control, async () => {
+        try {
+          const data = JSON.parse(await file.text());
+          if (!data || typeof data !== 'object' || !Array.isArray(data.projects) || !Array.isArray(data.items)) {
+            throw new Error('Invalid backup format. Projects and production items are required.');
+          }
+          for (const name of BUSINESS_COLLECTIONS) {
+            if (data[name] != null && !Array.isArray(data[name])) throw new Error(`Invalid backup collection: ${name}.`);
+          }
+          if (!confirm('Restore this backup and replace shared ERP data for every user?')) return;
+          const existingUsers = state.users;
+          const existingSettings = state.settings;
+          state = {
+            ...defaultState(),
+            ...data,
+            settings: { ...defaultState().settings, ...(data.settings || existingSettings) },
+            users: existingUsers,
+          };
+          audit('RESTORE', 'Settings', `Restored ERP backup ${file.name}`);
+          await saveState();
+          render();
+          toast('Backup restored', 'Shared operational data was restored. Supabase users were not changed.');
+        } catch (error) {
+          toast('Restore failed', error.message, 'error');
+        } finally {
+          backupInput.value = '';
+        }
+      });
+    };
+    document.getElementById('reset-data').onclick = async event => {
+      if (!confirm('This permanently deletes shared ERP operational data for every user. Continue?')) return;
+      if (!confirm('Final confirmation: delete everything?')) return;
+      await withOperationalMutationLock('reset-all-data', event.currentTarget, async () => {
+        const preservedSettings = state.settings;
+        const preservedUsers = state.users;
+        state = { ...defaultState(), settings: preservedSettings, users: preservedUsers };
+        audit('RESET', 'Settings', 'Deleted all shared ERP operational data');
+        try {
+          await saveState();
+          render();
+          toast('Shared data reset', 'All operational records were deleted from the database.');
+        } catch (error) {
+          toast('Reset failed', error.message, 'error');
+        }
+      });
+    };
   }
 
   function openModal(title, body, footer='', size='') {
@@ -1857,9 +2459,19 @@
 
   document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal();});
   window.addEventListener('resize',()=>{if(authSession&&currentRoute==='dashboard'){clearTimeout(window.__chartTimer);window.__chartTimer=setTimeout(()=>renderDashboard(),150);}});
-  window.addEventListener('focus',()=>{if(authSession&&operationalDataReady)scheduleOperationalReload(0);});
-  window.addEventListener('online',()=>{if(authSession&&operationalDataReady){subscribeOperationalRealtime();scheduleOperationalReload(0);}});
-  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&authSession&&operationalDataReady)scheduleOperationalReload(0);});
+  window.addEventListener('focus', () => {
+    if (!authSession || !operationalDataReady) return;
+    if (realtimeStatus !== 'SUBSCRIBED' || Date.now() - lastOperationalLoadAt > 30000) scheduleOperationalReload(0);
+  });
+  window.addEventListener('online', () => {
+    if (!authSession || !operationalDataReady) return;
+    subscribeOperationalRealtime(true);
+    scheduleOperationalReload(0);
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible' || !authSession || !operationalDataReady) return;
+    if (realtimeStatus !== 'SUBSCRIBED' || Date.now() - lastOperationalLoadAt > 30000) scheduleOperationalReload(0);
+  });
 
   initialiseAuthentication();
 })();
