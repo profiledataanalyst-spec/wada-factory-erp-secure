@@ -15,29 +15,23 @@
   });
   let legacyBusinessSnapshot = null;
   const STAGES = [
-    'PLANNING', 'CUTTING', 'FABRICATION', 'GRINDING',
-    'PRE-COATING', 'POWDER COATING', 'READY FOR DISPATCH'
-  ];
-  const LEGACY_STAGES = [
     'PLANNING', 'MRN - STORES', 'CUTTING', 'FABRICATION', 'GRINDING',
     'PRE-COATING', 'POWDER COATING', 'ASSEMBLY', 'READY FOR DISPATCH'
   ];
-  const LEGACY_STAGE_FALLBACKS = Object.freeze({
-    'MRN - STORES': 'PLANNING',
-    'ASSEMBLY': 'POWDER COATING'
-  });
 
-  const SECTIONS = ['Aluminium', 'Store', 'Fabrication', 'Outsource'];
-
+  const SECTIONS = Object.freeze(['Aluminium', 'Store', 'Fabrication', 'Outsource']);
+  const TASK_PRIORITIES = Object.freeze(['Low', 'Medium', 'High', 'Critical']);
   const TEMPLATE_HEADERS = [
     'PROJECT NAME', 'ITEM NAME', 'SECTION', 'SITE DETAILS', 'SIZE', 'BOM', 'QTY',
     'BOM NUMBER', 'JOB NO', 'BOM ISSUE DATE', 'DRAWING ISSUE DATE',
     'INDENT NO', 'INDENT ISSUE DATE', 'TENT DEL DATE', 'SHORTAGES', 'STATUS'
   ];
+  // SECTION is optional only for legacy workbooks so existing uploads remain backward-compatible.
+  const REQUIRED_TEMPLATE_HEADERS = TEMPLATE_HEADERS.filter(header => header !== 'SECTION');
 
   const BRAND = {
     name: 'Profile Solutions',
-    erpName: 'Profile Solutions Procurement ERP',
+    erpName: 'Profile Solutions ERP',
     tagline: 'Data Center Infrastructure Experts',
     factory: 'Wada Manufacturing Unit',
     logo: 'assets/profile-solutions-logo.svg',
@@ -105,7 +99,7 @@
   };
 
   const NAV = [
-    { id: 'dashboard', label: 'Procurement Overview', icon: ICONS.dashboard, roles: ['ADMIN','MANAGER','EXECUTIVE'], section: 'Overview' },
+    { id: 'dashboard', label: 'Factory Overview', icon: ICONS.dashboard, roles: ['ADMIN','MANAGER','EXECUTIVE'], section: 'Overview' },
     { id: 'projects', label: 'Projects', icon: ICONS.projects, roles: ['ADMIN','MANAGER','EXECUTIVE'], section: 'Operations' },
     { id: 'production', label: 'Production Tracker', icon: ICONS.production, roles: ['ADMIN','MANAGER','EXECUTIVE'], section: 'Operations' },
     { id: 'shortages', label: 'Shortages & Issues', icon: ICONS.shortage, roles: ['ADMIN','MANAGER','EXECUTIVE'], section: 'Operations' },
@@ -116,14 +110,13 @@
     { id: 'settings', label: 'Settings & Backup', icon: ICONS.settings, roles: ['ADMIN'], section: 'Administration' }
   ];
 
-  const APP_VERSION = '11.3.1';
+  const APP_VERSION = '11.1.0';
   const API_TIMEOUT_MS = 22000;
   const SESSION_REFRESH_WINDOW_SECONDS = 90;
   const TRANSIENT_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
   let state = loadState();
-  const legacyApplicationNames = ['Factory' + ' ERP', 'Profile Solutions' + ' ERP', 'Profile Solutions Production' + ' ERP'];
-  if (legacyApplicationNames.includes(state.settings.companyName)) state.settings.companyName = BRAND.erpName;
+  if (state.settings.companyName === 'Factory ERP') state.settings.companyName = BRAND.erpName;
   if (state.settings.factoryName === 'Main Manufacturing Unit') state.settings.factoryName = BRAND.factory;
   let currentRoute = 'dashboard';
   let supabaseClient = null;
@@ -166,15 +159,12 @@
   let authenticatedStartupPromise = null;
   let sessionExpiryInProgress = false;
   let globalClickListenerInstalled = false;
-  let activeProjectItemsModalProjectId = '';
-  let projectItemsModalReloadTimer = null;
-  let projectItemsModalSaving = false;
 
   function defaultState() {
     return {
       version: 11,
       settings: {
-        companyName: 'Profile Solutions Procurement ERP',
+        companyName: 'Profile Solutions ERP',
         factoryName: 'Wada Manufacturing Unit',
         theme: 'light',
         dateFormat: 'DD/MM/YYYY',
@@ -277,45 +267,6 @@
     else if (/submit|assigned|info/i.test(text)) cls = 'status-info';
     return `<span class="status ${cls}">${esc(text)}</span>`;
   }
-  function normalizedStageName(stageName, stageIndex, assumeLegacyIndex = false) {
-    const rawName = String(stageName || '').trim().toUpperCase().replace(/\s*-\s*/g, ' - ').replace(/\s+/g, ' ');
-    const compact = rawName.replace(/[\s-]/g, '');
-    const retained = STAGES.find(name => name.replace(/[\s-]/g, '') === compact);
-    if (retained) return retained;
-    const legacyName = LEGACY_STAGES.find(name => name.replace(/[\s-]/g, '') === compact);
-    if (legacyName) return LEGACY_STAGE_FALLBACKS[legacyName] || legacyName;
-    const numeric = Number(stageIndex);
-    if (Number.isInteger(numeric)) {
-      if (!assumeLegacyIndex && numeric >= 0 && numeric < STAGES.length) return STAGES[numeric];
-      if (numeric >= 0 && numeric < LEGACY_STAGES.length) {
-        const fromLegacy = LEGACY_STAGES[numeric];
-        return LEGACY_STAGE_FALLBACKS[fromLegacy] || fromLegacy;
-      }
-    }
-    return STAGES[0];
-  }
-
-  function normalizeProductionItemRecord(record, assumeLegacyIndex = false) {
-    if (!record || typeof record !== 'object') return record;
-    const normalized = { ...record };
-    const stageName = normalizedStageName(normalized.currentStageName, normalized.currentStage, assumeLegacyIndex || !normalized.currentStageName);
-    normalized.currentStage = STAGES.indexOf(stageName);
-    normalized.currentStageName = stageName;
-    normalized.uom = String(normalized.uom || 'Nos.').trim() || 'Nos.';
-    normalized.projectLineItemId = String(normalized.projectLineItemId || '').trim();
-    normalized.quantity = Number(normalized.quantity || 0);
-    normalized.dispatchQuantity = Number(normalized.dispatchQuantity || 0);
-    normalized.pendingQuantity = Math.max(0, normalized.quantity - normalized.dispatchQuantity);
-    if (Array.isArray(normalized.history)) {
-      normalized.history = normalized.history.map(event => {
-        if (!event || typeof event !== 'object') return event;
-        const eventStageName = normalizedStageName(event.stageName, event.stageIndex, assumeLegacyIndex || !event.stageName);
-        return { ...event, stageIndex: STAGES.indexOf(eventStageName), stageName: eventStageName };
-      });
-    }
-    return normalized;
-  }
-
   function getCurrentUser() { return currentProfile || state.users.find(u => u.id === authSession?.user?.id) || null; }
   function can(...roles) { return roles.includes(getCurrentUser()?.role); }
   function roleLabel(role) { return role === 'ADMIN' ? 'SUPER ADMIN' : role; }
@@ -327,7 +278,7 @@
   function manageableExecutives(managerId = getCurrentUser()?.id) {
     if (!managerId) return [];
     const assigned = new Set(state.projects.filter(p => p.managerId === managerId).flatMap(p => p.executiveIds || []));
-    return state.users.filter(u => u.role === 'EXECUTIVE' && u.status === 'Active' && (u.createdBy === managerId || assigned.has(u.id)));
+    return state.users.filter(u => u.role === 'EXECUTIVE' && (u.createdBy === managerId || assigned.has(u.id)));
   }
   function canManageUser(target) {
     const current = getCurrentUser();
@@ -350,45 +301,47 @@
   function projectById(id) { return state.projects.find(p => p.id === id); }
   function userById(id) { return state.users.find(u => u.id === id); }
   function itemById(id) { return state.items.find(i => i.id === id); }
-  function canonicalSection(value) {
-    const raw = String(value || '').trim().toLowerCase();
-    return SECTIONS.find(section => section.toLowerCase() === raw) || '';
-  }
-  function itemSection(item) { return canonicalSection(item?.section) || 'Unassigned'; }
-  function assignedExecutive(item) { return userById(String(item?.assignedExecutiveId || '')); }
-  function assignedExecutiveName(item) { return assignedExecutive(item)?.name || 'Unassigned'; }
-  function itemDueDate(item) { return item?.targetDate || projectById(item?.projectId)?.targetDate || ''; }
-  function itemPriority(item) { return item?.priority || projectById(item?.projectId)?.priority || 'Medium'; }
-  function itemTaskState(item) {
-    if (item?.status === 'Completed' || Number(item?.currentStage || 0) >= STAGES.length - 1) return 'Completed';
-    if (Number(item?.currentStage || 0) > 0 || ['Delayed','On Hold'].includes(item?.status)) return 'In Progress';
-    return 'Pending';
-  }
-  function projectSections(projectId) {
-    return [...new Set(state.items.filter(item => item.projectId === projectId).map(itemSection).filter(section => section !== 'Unassigned'))];
-  }
   function assignedProjects() {
     const user = getCurrentUser();
     if (!user) return [];
     if (user.role !== 'EXECUTIVE') return state.projects;
-    const assignedProjectIds = new Set(state.items.filter(item => String(item.assignedExecutiveId || '') === user.id).map(item => item.projectId));
-    return state.projects.filter(project => assignedProjectIds.has(project.id) || (project.executiveIds || []).includes(user.id));
+    const itemProjectIds = new Set(state.items.filter(item => item.assignedExecutiveId === user.id).map(item => item.projectId));
+    return state.projects.filter(project => itemProjectIds.has(project.id) || (project.executiveIds || []).includes(user.id));
   }
   function visibleItems() {
     const user = getCurrentUser();
     if (!user) return [];
+    if (user.role === 'EXECUTIVE') return state.items.filter(item => item.assignedExecutiveId === user.id);
     const allowed = new Set(assignedProjects().map(project => project.id));
-    return state.items.filter(item => allowed.has(item.projectId) && (user.role !== 'EXECUTIVE' || String(item.assignedExecutiveId || '') === user.id));
+    return state.items.filter(item => allowed.has(item.projectId));
   }
-  function visibleShortages() {
-    const visibleItemIds = new Set(visibleItems().map(item => item.id));
-    const visibleProjectIds = new Set(assignedProjects().map(project => project.id));
-    const user = getCurrentUser();
-    return state.shortages.filter(shortage => visibleItemIds.has(shortage.itemId) || (user?.role !== 'EXECUTIVE' && visibleProjectIds.has(shortage.projectId)) || (!shortage.itemId && visibleProjectIds.has(shortage.projectId)));
+  function canonicalSection(value) {
+    const key = String(value || '').trim().toLowerCase();
+    return SECTIONS.find(section => section.toLowerCase() === key) || '';
   }
+  function itemSection(item) { return canonicalSection(item?.section) || 'Not Specified'; }
+  function assignedExecutive(item) { return userById(item?.assignedExecutiveId) || null; }
+  function assignedByName(item) { return item?.assignedByName || userById(item?.assignedById)?.name || '—'; }
+  function taskDueDate(item) { return item?.dueDate || item?.targetDate || projectById(item?.projectId)?.targetDate || ''; }
+  function taskPriority(item) { return item?.priority || projectById(item?.projectId)?.priority || 'Medium'; }
+  function taskStatus(item) {
+    if (!item?.assignedExecutiveId) return 'Pending Assignment';
+    if (item.status === 'Completed' || Number(item.currentStage) >= STAGES.length - 1) return 'Completed';
+    if (item.status === 'Delayed') return 'Delayed';
+    if (item.status === 'On Hold') return 'On Hold';
+    if (item.approvalStatus === 'SUBMITTED') return 'Awaiting Approval';
+    return 'In Progress';
+  }
+  function assignmentExecutives() {
+    const current = getCurrentUser();
+    if (!current) return [];
+    return state.users.filter(user => user.role === 'EXECUTIVE' && user.status === 'Active');
+  }
+  function canAssignTasks() { return can('ADMIN', 'MANAGER'); }
   function canUpdateItemStage(item) {
     const user=getCurrentUser();
-    return Boolean(user && item && ['ADMIN','MANAGER','EXECUTIVE'].includes(user.role));
+    if (!user || !item || !['ADMIN','MANAGER','EXECUTIVE'].includes(user.role)) return false;
+    return user.role !== 'EXECUTIVE' || item.assignedExecutiveId === user.id;
   }
   function completionPercent(item) {
     if (!item) return 0;
@@ -443,8 +396,8 @@
         <div class="loading-card">
           ${brandLogo('loading-logo')}
           <div class="loading-orbit"><span></span><span></span><span></span></div>
-          <h1>Profile Solutions Procurement ERP</h1>
-          <p>Preparing your secure procurement workspace…</p>
+          <h1>Profile Solutions ERP</h1>
+          <p>Preparing your secure manufacturing workspace…</p>
           <div class="loading-progress"><span></span></div>
         </div>
       </div>`;
@@ -453,7 +406,7 @@
   function renderAuth() {
     document.getElementById('app').innerHTML = `
       <div class="auth-shell">
-        <section class="auth-visual" aria-label="Profile Solutions procurement platform">
+        <section class="auth-visual" aria-label="Profile Solutions manufacturing platform">
           <div class="auth-photo-layer" aria-hidden="true"></div>
           <div class="auth-overlay" aria-hidden="true"></div>
           <div class="auth-brand-row">
@@ -461,11 +414,11 @@
             <span class="auth-brand-chip">Enterprise Operations</span>
           </div>
           <div class="auth-hero">
-            <span class="eyebrow"><i></i> Profile Solutions Procurement ERP</span>
+            <span class="eyebrow"><i></i> Wada Factory ERP</span>
             <h2>Engineering precision.<br><em>Operational clarity.</em></h2>
-            <p>A unified procurement workspace for projects, production stages, shortages, reporting and secure role-based operations.</p>
+            <p>A unified workspace for projects, production stages, shortages, reporting and secure role-based operations.</p>
             <div class="auth-stats">
-              <div class="auth-stat"><span class="auth-stat-icon">${ICONS.production}</span><strong>${STAGES.length}</strong><span>Production stages</span></div>
+              <div class="auth-stat"><span class="auth-stat-icon">${ICONS.production}</span><strong>9</strong><span>Production stages</span></div>
               <div class="auth-stat"><span class="auth-stat-icon">${ICONS.shield}</span><strong>3</strong><span>Controlled role levels</span></div>
               <div class="auth-stat"><span class="auth-stat-icon">${ICONS.factory}</span><strong>1</strong><span>Connected workspace</span></div>
             </div>
@@ -770,15 +723,6 @@
     });
   }
 
-
-  async function callProjectLineItemsApi(action, payload = {}) {
-    const requestId = payload.requestId || createRequestId('PLI');
-    return authenticatedApiRequest('/api/project-line-items', { action, ...payload, requestId }, {
-      retries: 1,
-      timeoutMs: 30000,
-    });
-  }
-
   function recordVersionKey(entity, recordId) {
     return `${entity}:${recordId}`;
   }
@@ -820,16 +764,15 @@
   function applyConfirmedItemRecord(record, version = '') {
     if (!record?.id) return;
     const index = state.items.findIndex(item => item.id === record.id);
-    const normalizedRecord = normalizeProductionItemRecord(record);
-    if (index >= 0) state.items[index] = cloneJson(normalizedRecord);
-    else state.items.push(cloneJson(normalizedRecord));
+    if (index >= 0) state.items[index] = cloneJson(record);
+    else state.items.push(cloneJson(record));
     state.items = sortBusinessCollection('items', state.items);
     if (version) operationalRecordVersions.set(recordVersionKey('items', record.id), version);
     if (lastSyncedBusiness) {
       const rows = Array.isArray(lastSyncedBusiness.items) ? lastSyncedBusiness.items : [];
       const syncedIndex = rows.findIndex(item => item.id === record.id);
-      if (syncedIndex >= 0) rows[syncedIndex] = cloneJson(normalizedRecord);
-      else rows.push(cloneJson(normalizedRecord));
+      if (syncedIndex >= 0) rows[syncedIndex] = cloneJson(record);
+      else rows.push(cloneJson(record));
       lastSyncedBusiness.items = sortBusinessCollection('items', rows);
     }
   }
@@ -1112,8 +1055,7 @@
       for (const row of rows) {
         const name = String(row.entity_type || '');
         if (!BUSINESS_COLLECTIONS.includes(name) || !row.payload || typeof row.payload !== 'object') continue;
-        let record = { ...row.payload, id: String(row.record_id || row.payload.id || '') };
-        if (name === 'items') record = normalizeProductionItemRecord(record, true);
+        const record = { ...row.payload, id: String(row.record_id || row.payload.id || '') };
         if (record.id) {
           next[name].push(record);
           if (row.updated_at) nextVersions.set(recordVersionKey(name, record.id), String(row.updated_at));
@@ -1140,10 +1082,7 @@
     const records = [];
     for (const name of BUSINESS_COLLECTIONS) {
       for (const record of snapshot?.[name] || []) {
-        if (record?.id) {
-          const payload = name === 'items' ? normalizeProductionItemRecord(record, true) : record;
-          records.push({ entityType: name, recordId: String(record.id), payload });
-        }
+        if (record?.id) records.push({ entityType: name, recordId: String(record.id), payload: record });
       }
     }
     return records;
@@ -1225,9 +1164,7 @@
         state[entity] = state[entity].filter(record => String(record.id) !== recordId);
         operationalRecordVersions.delete(recordVersionKey(entity, recordId));
       } else if (row?.payload && typeof row.payload === 'object') {
-        const record = entity === 'items'
-          ? normalizeProductionItemRecord({ ...row.payload, id: recordId }, true)
-          : { ...row.payload, id: recordId };
+        const record = { ...row.payload, id: recordId };
         const index = state[entity].findIndex(existing => String(existing.id) === recordId);
         if (index >= 0) state[entity][index] = record;
         else state[entity].push(record);
@@ -1240,16 +1177,6 @@
       applyingRemoteData = false;
     }
     scheduleRealtimeViewRefresh();
-    if (entity === 'items') {
-      const previousItem = payload.old?.payload || {};
-      const nextItem = payload.new?.payload || {};
-      const synchronizedFields = ['projectId','projectLineItemId','itemName','uom','quantity','dispatchQuantity','pendingQuantity'];
-      const linkedValuesChanged = payload.eventType !== 'UPDATE' || synchronizedFields.some(field => canonicalJson(previousItem[field]) !== canonicalJson(nextItem[field]));
-      if (linkedValuesChanged) {
-        const itemProjectId = String((payload.eventType === 'DELETE' ? previousItem : nextItem).projectId || '');
-        scheduleProjectItemsModalRefresh(itemProjectId);
-      }
-    }
   }
 
   function drainRealtimePayloads() {
@@ -1502,7 +1429,7 @@
             <img class="sidebar-logo-mark" src="${BRAND.mark}" alt="Profile Solutions">
             <button class="sidebar-collapse-btn" data-action="collapse-sidebar" title="${collapsed ? 'Expand sidebar' : 'Collapse sidebar'}" aria-label="${collapsed ? 'Expand sidebar' : 'Collapse sidebar'}">${ICONS.chevronLeft}</button>
           </div>
-          <div class="factory-chip"><span>${ICONS.factory}</span><div><strong>${esc(state.settings.factoryName)}</strong><small>Procurement Operations</small></div></div>
+          <div class="factory-chip"><span>${ICONS.factory}</span><div><strong>${esc(state.settings.factoryName)}</strong><small>Manufacturing Operations</small></div></div>
           <nav class="nav-scroll">
             ${groups.map(g => `<div class="nav-section-title">${esc(g)}</div>${allowed.filter(n=>n.section===g).map(n=>`<button class="nav-item ${currentRoute===n.id?'active':''}" data-route="${n.id}" title="${esc(n.label)}"><span class="nav-icon">${n.icon}</span><span class="nav-label">${esc(n.label)}</span><span class="nav-active-marker"></span></button>`).join('')}`).join('')}
           </nav>
@@ -1515,7 +1442,7 @@
             <button class="icon-btn mobile-menu-btn" data-action="toggle-sidebar" aria-label="Open navigation">${ICONS.menu}</button>
             <div class="topbar-brand"><img src="${BRAND.mark}" alt="Profile Solutions"><span>Profile Solutions</span></div>
             <span class="topbar-divider"></span>
-            <div class="page-heading"><h1 id="top-page-title">Procurement Overview</h1><small id="top-page-subtitle">Live operations summary</small></div>
+            <div class="page-heading"><h1 id="top-page-title">Factory Overview</h1><small id="top-page-subtitle">Live operations summary</small></div>
           </div>
           <div class="topbar-search"><span class="search-icon">${ICONS.search}</span><input id="global-search" aria-label="Global ERP search" placeholder="Search project, job, BOM or item..." autocomplete="off"><kbd>Ctrl K</kbd><div id="global-results"></div></div>
           <div class="topbar-actions">
@@ -1613,7 +1540,6 @@
 
   function setPageTitle(title, subtitle) {
     const a = document.getElementById('top-page-title'); const b = document.getElementById('top-page-subtitle');
-    document.title = `${title} | ${BRAND.erpName}`;
     if (a) a.textContent = title; if (b) b.textContent = subtitle || '';
   }
 
@@ -1633,7 +1559,7 @@
     const q = query.trim().toLowerCase();
     if (!q || q.length < 2) { box.innerHTML = ''; return; }
     const projects = assignedProjects().filter(p => [p.name,p.code,p.jobNumber,p.site,p.client].some(v => String(v||'').toLowerCase().includes(q))).slice(0,5);
-    const items = visibleItems().filter(i => [i.itemName,i.bomNumber,i.jobNumber,i.site,itemSection(i),assignedExecutiveName(i)].some(v => String(v||'').toLowerCase().includes(q))).slice(0,7);
+    const items = visibleItems().filter(i => [i.itemName,i.bomNumber,i.jobNumber,i.site,i.section,assignedExecutive(i)?.name].some(v => String(v||'').toLowerCase().includes(q))).slice(0,7);
     if (!projects.length && !items.length) { box.innerHTML = `<div class="search-results"><div class="empty-state" style="padding:24px"><p>No matching records</p></div></div>`; return; }
     box.innerHTML = `<div class="search-results">
       ${projects.length ? `<div class="search-group-title">Projects</div>${projects.map(p=>`<button class="search-result" data-search-project="${p.id}"><span class="result-icon">${ICONS.project}</span><span><strong>${esc(p.name)}</strong><span>${esc(p.code)} • ${esc(p.jobNumber || 'No Job No.')}</span></span></button>`).join('')}`:''}
@@ -1665,10 +1591,56 @@
   }
 
   function pageToolbar(title, subtitle, actions = '') {
-    return `<div class="page-toolbar"><div class="page-toolbar-copy"><span class="eyebrow dark"><i></i> Profile Solutions Procurement ERP</span><h2>${esc(title)}</h2><p>${esc(subtitle)}</p></div><div class="toolbar-actions">${actions}</div></div>`;
+    return `<div class="page-toolbar"><div class="page-toolbar-copy"><span class="eyebrow dark"><i></i> Profile Solutions ERP</span><h2>${esc(title)}</h2><p>${esc(subtitle)}</p></div><div class="toolbar-actions">${actions}</div></div>`;
   }
   function emptyState(icon, title, text, action='') {
     return `<div class="empty-state"><div class="empty-icon">${icon}</div><h3>${esc(title)}</h3><p>${esc(text)}</p>${action}</div>`;
+  }
+
+  function sectionSummary(items, section) {
+    const rows = items.filter(item => canonicalSection(item.section) === section);
+    const completed = rows.filter(item => taskStatus(item) === 'Completed').length;
+    return {
+      total: rows.length,
+      assigned: rows.filter(item => Boolean(item.assignedExecutiveId)).length,
+      inProgress: rows.filter(item => ['In Progress', 'Awaiting Approval', 'Delayed', 'On Hold'].includes(taskStatus(item))).length,
+      completed,
+      pending: Math.max(0, rows.length - completed),
+    };
+  }
+  function renderSectionOverview(items) {
+    return `<section class="card section-overview"><div class="card-header"><div><h3>Section Overview</h3><p>Live production and assignment summary by factory section</p></div></div><div class="card-body"><div class="section-overview-grid">${SECTIONS.map(section => {
+      const stats = sectionSummary(items, section);
+      return `<article class="section-summary-card"><div class="section-summary-head"><span>${esc(section)}</span><strong>${stats.total}</strong></div><div class="section-summary-metrics"><span><b>${stats.total}</b>Total Items</span><span><b>${stats.assigned}</b>Assigned</span><span><b>${stats.inProgress}</b>In Progress</span><span><b>${stats.completed}</b>Completed</span><span><b>${stats.pending}</b>Pending</span></div></article>`;
+    }).join('')}</div></div></section>`;
+  }
+  function renderExecutiveDashboard() {
+    const items = visibleItems();
+    const overdue = items.filter(item => taskDueDate(item) && new Date(taskDueDate(item)) < new Date() && taskStatus(item) !== 'Completed').length;
+    setPageTitle('EXECUTIVE Dashboard', 'Only work assigned to your account');
+    const page = document.getElementById('page-content');
+    page.innerHTML = `${pageToolbar('Executive Dashboard','View and update only the production work assigned to you.','<button class="btn btn-secondary" id="refresh-dashboard">'+ICONS.refresh+'<span>Refresh</span></button>')}
+      <div class="grid grid-4 kpi-grid">
+        ${kpi(ICONS.item,'Assigned Work',items.length,'Your production tasks')}
+        ${kpi(ICONS.production,'In Progress',items.filter(item=>['In Progress','Awaiting Approval','Delayed','On Hold'].includes(taskStatus(item))).length,'Active assigned work')}
+        ${kpi(ICONS.check,'Completed',items.filter(item=>taskStatus(item)==='Completed').length,'Finished tasks')}
+        ${kpi(ICONS.clock,'Overdue',overdue,'Past due date')}
+      </div>
+      <div style="margin-top:18px">${renderSectionOverview(items)}</div>
+      <div class="filter-bar" style="margin-top:18px"><div class="filter-item search-wide"><input id="executive-task-search" placeholder="Search project, item, section or stage"></div><div class="filter-item"><select id="executive-task-section"><option value="">All sections</option>${SECTIONS.map(section=>`<option>${esc(section)}</option>`).join('')}</select></div><div class="filter-item"><select id="executive-task-status"><option value="">All statuses</option><option>Pending Assignment</option><option>In Progress</option><option>Awaiting Approval</option><option>Delayed</option><option>On Hold</option><option>Completed</option></select></div></div>
+      <section class="card table-card"><div class="table-wrap"><table><thead><tr><th>Project Name</th><th>Item Name</th><th>Section</th><th>Current Production Stage</th><th>Assigned By</th><th>Due Date</th><th>Priority</th><th>Status</th><th>Action</th></tr></thead><tbody id="executive-task-body"></tbody></table></div><div class="table-footer"><span id="executive-task-count"></span><span>Only tasks assigned to your user account are visible</span></div></section>`;
+    const draw = () => {
+      const q = document.getElementById('executive-task-search').value.toLowerCase();
+      const section = document.getElementById('executive-task-section').value;
+      const status = document.getElementById('executive-task-status').value;
+      const rows = items.filter(item => (!q || [projectById(item.projectId)?.name,item.itemName,item.section,STAGES[item.currentStage],assignedByName(item)].some(value=>String(value||'').toLowerCase().includes(q))) && (!section || canonicalSection(item.section)===section) && (!status || taskStatus(item)===status));
+      document.getElementById('executive-task-count').textContent = `${rows.length} assigned task(s)`;
+      document.getElementById('executive-task-body').innerHTML = rows.length ? rows.map(item=>`<tr><td>${esc(projectById(item.projectId)?.name||'Unknown')}</td><td><strong>${esc(item.itemName)}</strong><div class="small muted">${esc(item.bomNumber||'—')}</div></td><td>${statusChip(itemSection(item))}</td><td>${esc(STAGES[item.currentStage]||'PLANNING')}</td><td>${esc(assignedByName(item))}</td><td>${fmtDate(taskDueDate(item))}</td><td>${statusChip(taskPriority(item))}</td><td>${statusChip(taskStatus(item))}</td><td><button class="btn btn-secondary btn-sm" data-view-item="${item.id}">Open</button></td></tr>`).join('') : `<tr><td colspan="9">${emptyState(ICONS.item,'No assigned work','A Super Admin or Manager must assign production tasks to your account.')}</td></tr>`;
+      document.querySelectorAll('[data-view-item]').forEach(button=>button.onclick=()=>openItemDetail(button.dataset.viewItem));
+    };
+    draw();
+    ['executive-task-search','executive-task-section','executive-task-status'].forEach(id=>document.getElementById(id).addEventListener(id==='executive-task-search'?'input':'change',draw));
+    document.getElementById('refresh-dashboard').onclick = async event => { const button=event.currentTarget;setControlBusy(button,true);try{await loadOperationalData({renderAfter:true});toast('Dashboard refreshed');}catch(error){toast('Refresh failed',error.message,'error');}finally{setControlBusy(button,false);} };
   }
 
   function renderDashboard() {
@@ -1681,12 +1653,12 @@
     const delayed = projects.filter(p => p.status === 'Delayed' || (p.targetDate && new Date(p.targetDate) < new Date() && projectCompletion(p.id) < 100)).length;
     const completed = projects.filter(p => p.status === 'Completed' || projectCompletion(p.id) === 100).length;
     const qty = items.reduce((a,i)=>a+number(i.quantity),0);
-    const ready = items.filter(i=>i.currentStage>=STAGES.length-1 || i.status==='Completed').reduce((a,i)=>a+number(i.quantity),0);
+    const ready = items.filter(i=>i.currentStage>=8 || i.status==='Completed').reduce((a,i)=>a+number(i.quantity),0);
     const pending = Math.max(0, qty-ready);
     const shortages = state.shortages.filter(s => s.status !== 'Resolved' && projects.some(p=>p.id===s.projectId)).length;
     const page = document.getElementById('page-content');
     page.innerHTML = `
-      ${pageToolbar('Procurement Overview Dashboard','Monitor production, delivery risk and workflow progress.', `<button class="btn btn-secondary" id="refresh-dashboard">${ICONS.refresh}<span>Refresh</span></button>${can('ADMIN','MANAGER')?`<button class="btn btn-primary" data-go="import">${ICONS.upload}<span>Import Excel</span></button>`:''}`)}
+      ${pageToolbar('Factory Overview Dashboard','Monitor production, delivery risk and workflow progress.', `<button class="btn btn-secondary" id="refresh-dashboard">${ICONS.refresh}<span>Refresh</span></button>${can('ADMIN','MANAGER')?`<button class="btn btn-primary" data-go="import">${ICONS.upload}<span>Import Excel</span></button>`:''}`)}
       <section class="dashboard-hero">
         <div class="dashboard-hero-media" aria-hidden="true"></div><div class="dashboard-hero-overlay" aria-hidden="true"></div>
         <div class="dashboard-hero-content"><span class="eyebrow"><i></i> ${esc(roleLabel(getCurrentUser()?.role || ''))} workspace</span><h3>Welcome back, ${esc((getCurrentUser()?.name || 'Team').split(' ')[0])}.</h3><p>Keep Profile Solutions projects moving with a live view of production flow, delivery risk and operational priorities.</p><div class="hero-meta"><span>${ICONS.calendar}${fmtDate(todayISO())}</span><span>${ICONS.factory}${esc(state.settings.factoryName)}</span></div></div>
@@ -1699,11 +1671,11 @@
         ${kpi(ICONS.item,'Total Quantity',fmtNumber(qty),`${fmtNumber(pending)} pending`)}
         ${kpi(ICONS.ready,'Ready for Dispatch',fmtNumber(ready),`${shortages} open shortages`)}
       </div>
+      <div style="margin-top:18px">${renderSectionOverview(items)}</div>
       <div class="grid grid-2" style="margin-top:18px">
         <section class="card"><div class="card-header"><div><h3>Stage-wise Production</h3><p>Items currently positioned at each workflow stage</p></div></div><div class="card-body"><div class="chart-box"><canvas id="stage-chart"></canvas></div></div></section>
         <section class="card"><div class="card-header"><div><h3>Project Progress</h3><p>Completion percentage by active project</p></div></div><div class="card-body"><div class="chart-box"><canvas id="project-chart"></canvas></div></div></section>
       </div>
-      ${renderSectionSummary(items)}
       <div class="grid grid-3" style="margin-top:18px">
         <section class="card" style="grid-column:span 2"><div class="card-header"><div><h3>Recent Production Activity</h3><p>Latest workflow movements and approvals</p></div></div><div class="card-body">${renderRecentActivity()}</div></section>
         <section class="card"><div class="card-header"><div><h3>Upcoming Deliveries</h3><p>Projects closest to target date</p></div></div><div class="card-body">${renderUpcomingDeliveries(projects)}</div></section>
@@ -1712,55 +1684,17 @@
     document.getElementById('refresh-dashboard').onclick = async event => {
       const button = event.currentTarget;
       setControlBusy(button, true);
-      try {
-        await loadOperationalData({ renderAfter: true });
-        toast('Dashboard refreshed', 'Latest production data loaded from the shared database.');
-      } catch (error) {
-        toast('Refresh failed', error.message || 'Unable to load the latest production data.', 'error');
-      } finally { setControlBusy(button, false); }
+      try { await loadOperationalData({ renderAfter: true }); toast('Dashboard refreshed', 'Latest production data loaded from the shared database.'); }
+      catch (error) { toast('Refresh failed', error.message || 'Unable to load the latest production data.', 'error'); }
+      finally { setControlBusy(button, false); }
     };
     requestAnimationFrame(() => {
-      drawBarChart('stage-chart', STAGES.map((s,idx)=>({label:shortStage(s), value:items.filter(i=>Number(i.currentStage)===idx).length})), { horizontal:false });
-      drawBarChart('project-chart', projects.slice(0,10).map(p=>({label:p.name.length>18?p.name.slice(0,18)+'…':p.name,value:projectCompletion(p.id)})), { max:100, suffix:'%' });
+      drawBarChart('stage-chart', STAGES.map((stage,index)=>({label:shortStage(stage), value:items.filter(item=>Number(item.currentStage)===index).length})), { horizontal:false });
+      drawBarChart('project-chart', projects.slice(0,10).map(project=>({label:project.name.length>18?project.name.slice(0,18)+'…':project.name,value:projectCompletion(project.id)})), { max:100, suffix:'%' });
     });
   }
-
-  function renderSectionSummary(items = visibleItems()) {
-    const rows = SECTIONS.map(section => {
-      const sectionItems = items.filter(item => itemSection(item) === section);
-      const completed = sectionItems.filter(item => itemTaskState(item) === 'Completed').length;
-      const inProgress = sectionItems.filter(item => itemTaskState(item) === 'In Progress').length;
-      const pending = sectionItems.filter(item => itemTaskState(item) === 'Pending').length;
-      const assigned = sectionItems.filter(item => item.assignedExecutiveId).length;
-      return { section, total: sectionItems.length, assigned, inProgress, completed, pending };
-    });
-    return `<section class="card table-card" style="margin-top:18px"><div class="card-header"><div><h3>Section Summary</h3><p>Live section-wise production workload and assignment status</p></div></div><div class="table-wrap"><table><thead><tr><th>Section</th><th>Total Items</th><th>Total Assigned</th><th>In Progress</th><th>Completed</th><th>Pending</th></tr></thead><tbody>${rows.map(row=>`<tr><td><strong>${esc(row.section)}</strong></td><td>${row.total}</td><td>${row.assigned}</td><td>${row.inProgress}</td><td>${row.completed}</td><td>${row.pending}</td></tr>`).join('')}</tbody></table></div></section>`;
-  }
-
-  function renderExecutiveDashboard() {
-    setPageTitle('Executive Dashboard', 'Your assigned production work');
-    const user = getCurrentUser();
-    const items = visibleItems();
-    const projectIds = new Set(items.map(item => item.projectId));
-    const projects = assignedProjects().filter(project => projectIds.has(project.id));
-    const pending = items.filter(item => itemTaskState(item) !== 'Completed').length;
-    const completed = items.filter(item => itemTaskState(item) === 'Completed').length;
-    const page = document.getElementById('page-content');
-    page.innerHTML = `${pageToolbar('Executive Dashboard','Only work assigned to your account is displayed.',`<button class="btn btn-secondary" id="refresh-dashboard">${ICONS.refresh}<span>Refresh</span></button>`)}
-      <div class="grid grid-4 kpi-grid">
-        ${kpi(ICONS.projects,'Assigned Projects',projects.length,'Projects containing assigned work')}
-        ${kpi(ICONS.item,'Assigned Items',items.length,`${pending} pending`)}
-        ${kpi(ICONS.clock,'Pending Tasks',pending,'Assigned work not completed')}
-        ${kpi(ICONS.check,'Completed Tasks',completed,'Finished assigned work')}
-      </div>
-      <section class="card table-card" style="margin-top:18px"><div class="card-header"><div><h3>My Assigned Work</h3><p>Section, current stage, due date and priority</p></div></div><div class="table-wrap"><table><thead><tr><th>Project</th><th>Assigned Item</th><th>Section</th><th>Current Stage</th><th>Task Status</th><th>Due Date</th><th>Priority</th><th>Action</th></tr></thead><tbody>${items.length?items.map(item=>`<tr><td>${esc(projectById(item.projectId)?.name||'—')}</td><td><strong>${esc(item.itemName)}</strong></td><td>${statusChip(itemSection(item))}</td><td>${esc(STAGES[item.currentStage]||'PLANNING')}</td><td>${statusChip(itemTaskState(item))}</td><td>${fmtDate(itemDueDate(item))}</td><td>${statusChip(itemPriority(item))}</td><td><button class="btn btn-secondary btn-sm" data-executive-item="${item.id}">Open</button></td></tr>`).join(''):`<tr><td colspan="9">${emptyState(ICONS.item,'No assigned work','A Super Admin or Manager can assign Aluminium, Store, Fabrication or Outsource work to you.')}</td></tr>`}</tbody></table></div></section>
-      ${renderSectionSummary(items)}`;
-    document.querySelectorAll('[data-executive-item]').forEach(button=>button.onclick=()=>openItemDetail(button.dataset.executiveItem));
-    document.getElementById('refresh-dashboard').onclick=async event=>{setControlBusy(event.currentTarget,true);try{await loadOperationalData({renderAfter:true});toast('Dashboard refreshed','Latest assigned work loaded.');}catch(error){toast('Refresh failed',error.message,'error');}finally{setControlBusy(event.currentTarget,false);}};
-  }
-
   function kpi(icon,label,value,meta) { return `<section class="card kpi-card"><div class="kpi-icon">${icon}</div><div class="kpi-copy"><span>${esc(label)}</span><strong>${esc(value)}</strong><small class="kpi-meta">${esc(meta)}</small></div></section>`; }
-  function shortStage(stage) { return stage.replace('READY FOR DISPATCH','DISPATCH').replace('POWDER COATING','P.COATING').replace('PRE-COATING','PRE COAT'); }
+  function shortStage(stage) { return stage.replace('READY FOR DISPATCH','DISPATCH').replace('POWDER COATING','P.COATING').replace('MRN - STORES','MRN').replace('PRE-COATING','PRE COAT'); }
   function renderRecentActivity() {
     const logs = state.audit.filter(a=>['Production','Projects','Import','Shortages'].includes(a.module)).slice(0,8);
     return logs.length ? `<div class="activity-list">${logs.map(a=>`<div class="activity-item"><div class="activity-icon">${a.module==='Production'?ICONS.production:a.module==='Import'?ICONS.upload:a.module==='Shortages'?ICONS.shortage:ICONS.projects}</div><div class="activity-main"><strong>${esc(a.action)} • ${esc(a.module)}</strong><span>${esc(a.details)} by ${esc(a.userName)}</span></div><div class="activity-time">${fmtDate(a.createdAt,true)}</div></div>`).join('')}</div>` : emptyState(ICONS.clock,'No recent activity','Activity will appear after records are created or updated.');
@@ -1792,13 +1726,13 @@
     const canEdit = can('ADMIN','MANAGER');
     const page = document.getElementById('page-content');
     page.innerHTML = `${pageToolbar('Project Tracking','Search projects, monitor completion and manage assignments.', canEdit?'<button class="btn btn-primary" id="add-project">+ New Project</button>':'')}
-      <div class="filter-bar"><div class="filter-item search-wide"><input id="project-search" placeholder="Search project, client, job number, site or section"></div><div class="filter-item"><select id="project-status"><option value="">All statuses</option><option>Active</option><option>Delayed</option><option>Completed</option><option>On Hold</option></select></div><div class="filter-item"><select id="project-section"><option value="">All sections</option>${SECTIONS.map(section=>`<option>${section}</option>`).join('')}</select></div><button class="btn btn-secondary" id="project-clear">Clear</button></div>
-      <section class="card table-card"><div class="table-wrap"><table><thead><tr><th>Project</th><th>Job No.</th><th>Client / Site</th><th>Section(s)</th><th>Manager</th><th>Target</th><th>Progress</th><th>Status</th><th>Actions</th></tr></thead><tbody id="projects-body"></tbody></table></div><div class="table-footer"><span id="project-count"></span><span>Click View for full project tracking</span></div></section>`;
+      <div class="filter-bar"><div class="filter-item search-wide"><input id="project-search" placeholder="Search project, client, job number, site or section"></div><div class="filter-item"><select id="project-status"><option value="">All statuses</option><option>Active</option><option>Delayed</option><option>Completed</option><option>On Hold</option></select></div><div class="filter-item"><select id="project-section"><option value="">All sections</option>${SECTIONS.map(section=>`<option>${esc(section)}</option>`).join('')}</select></div><button class="btn btn-secondary" id="project-clear">Clear</button></div>
+      <section class="card table-card"><div class="table-wrap"><table><thead><tr><th>Project</th><th>Job No.</th><th>Client / Site</th><th>Manager</th><th>Target</th><th>Progress</th><th>Status</th><th>Actions</th></tr></thead><tbody id="projects-body"></tbody></table></div><div class="table-footer"><span id="project-count"></span><span>Click View for full project tracking</span></div></section>`;
     const draw = () => {
       const q=document.getElementById('project-search').value.toLowerCase(), status=document.getElementById('project-status').value, section=document.getElementById('project-section').value;
-      const rows=projects.filter(project=>{const sections=projectSections(project.id);return(!q||[project.name,project.code,project.client,project.site,project.jobNumber,...sections].some(value=>String(value||'').toLowerCase().includes(q)))&&(!status||project.status===status)&&(!section||sections.includes(section));});
+      const rows=projects.filter(p=>{const projectItems=visibleItems().filter(item=>item.projectId===p.id);return(!q||[p.name,p.code,p.client,p.site,p.jobNumber,...projectItems.map(item=>item.section)].some(v=>String(v||'').toLowerCase().includes(q)))&&(!status||p.status===status)&&(!section||projectItems.some(item=>canonicalSection(item.section)===section));});
       document.getElementById('project-count').textContent=`${rows.length} project(s)`;
-      document.getElementById('projects-body').innerHTML=rows.length?rows.map(project=>{const sections=projectSections(project.id);return `<tr><td><strong>${esc(project.name)}</strong><div class="small muted">${esc(project.code)}</div></td><td>${esc(project.jobNumber||'—')}</td><td>${esc(project.client||'—')}<div class="small muted">${esc(project.site||'—')}</div></td><td>${sections.length?sections.map(section=>statusChip(section)).join(' '):'<span class="muted">Unassigned</span>'}</td><td>${esc(userById(project.managerId)?.name||'Unassigned')}</td><td>${fmtDate(project.targetDate)}</td><td style="min-width:150px"><div class="progress-line"><span style="width:${projectCompletion(project.id)}%"></span></div><div class="progress-meta"><span>${projectCompletion(project.id)}%</span><span>${state.items.filter(item=>item.projectId===project.id).length} items</span></div></td><td>${statusChip(project.status)}</td><td><div class="table-actions"><button class="btn btn-secondary btn-sm" data-view-project="${project.id}">View</button>${canEdit?`<button class="btn btn-secondary btn-sm" data-add-project-items="${project.id}">Add Items</button><button class="btn btn-secondary btn-sm" data-assign-section-project="${project.id}">Assign</button><button class="btn btn-ghost btn-sm" data-edit-project="${project.id}">✎</button>`:''}${can('ADMIN')?`<button class="btn btn-danger btn-sm" data-delete-project="${project.id}">×</button>`:''}</div></td></tr>`}).join(''):`<tr><td colspan="9">${emptyState('▣','No projects found','Create a project or import the MASTER SHEET to begin.')}</td></tr>`;
+      document.getElementById('projects-body').innerHTML=rows.length?rows.map(p=>`<tr><td><strong>${esc(p.name)}</strong><div class="small muted">${esc(p.code)}</div></td><td>${esc(p.jobNumber||'—')}</td><td>${esc(p.client||'—')}<div class="small muted">${esc(p.site||'—')}</div></td><td>${esc(userById(p.managerId)?.name||'Unassigned')}</td><td>${fmtDate(p.targetDate)}</td><td style="min-width:150px"><div class="progress-line"><span style="width:${projectCompletion(p.id)}%"></span></div><div class="progress-meta"><span>${projectCompletion(p.id)}%</span><span>${state.items.filter(i=>i.projectId===p.id).length} items</span></div></td><td>${statusChip(p.status)}</td><td><div class="table-actions"><button class="btn btn-secondary btn-sm" data-view-project="${p.id}">View</button>${canEdit?`<button class="btn btn-ghost btn-sm" data-edit-project="${p.id}">✎</button>`:''}${can('ADMIN')?`<button class="btn btn-danger btn-sm" data-delete-project="${p.id}">×</button>`:''}</div></td></tr>`).join(''):`<tr><td colspan="8">${emptyState('▣','No projects found','Create a project or import the MASTER SHEET to begin.')}</td></tr>`;
       bindProjectRowActions();
     };
     draw();
@@ -1806,7 +1740,7 @@
     document.getElementById('project-clear').onclick=()=>{document.getElementById('project-search').value='';document.getElementById('project-status').value='';document.getElementById('project-section').value='';draw();};
     if(document.getElementById('add-project')) document.getElementById('add-project').onclick=()=>openProjectForm();
   }
-  function bindProjectRowActions(){document.querySelectorAll('[data-view-project]').forEach(b=>b.onclick=()=>openProjectDetail(b.dataset.viewProject));document.querySelectorAll('[data-add-project-items]').forEach(b=>b.onclick=()=>openProjectItemsModal(b.dataset.addProjectItems));document.querySelectorAll('[data-assign-section-project]').forEach(b=>b.onclick=()=>openSectionAssignmentModal(b.dataset.assignSectionProject));document.querySelectorAll('[data-edit-project]').forEach(b=>b.onclick=()=>openProjectForm(projectById(b.dataset.editProject)));document.querySelectorAll('[data-delete-project]').forEach(b=>b.onclick=()=>deleteProject(b.dataset.deleteProject));}
+  function bindProjectRowActions(){document.querySelectorAll('[data-view-project]').forEach(b=>b.onclick=()=>openProjectDetail(b.dataset.viewProject));document.querySelectorAll('[data-edit-project]').forEach(b=>b.onclick=()=>openProjectForm(projectById(b.dataset.editProject)));document.querySelectorAll('[data-delete-project]').forEach(b=>b.onclick=()=>deleteProject(b.dataset.deleteProject));}
   async function deleteProject(id){
     if(!requireRole('ADMIN'))return;
     const p=projectById(id);if(!p)return;
@@ -1821,146 +1755,6 @@
       try{await saveState();renderProjects();toast('Project deleted');}
       catch(error){renderProjects();toast('Delete failed',error.message,'error');}
     });
-  }
-
-  function createProjectLineItemDraft(item = {}) {
-    return {
-      id: String(item.id || `PLI-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`),
-      lineItemName: String(item.lineItemName || ''),
-      section: canonicalSection(item.section),
-      assignedExecutiveId: String(item.assignedExecutiveId || ''),
-      uom: String(item.uom || 'Nos.'),
-      requiredQuantity: item.requiredQuantity ?? '',
-      dispatchQuantity: item.dispatchQuantity ?? 0,
-      pendingQuantity: item.pendingQuantity ?? 0,
-    };
-  }
-
-  function projectLineItemRowHtml(item = {}) {
-    const row = createProjectLineItemDraft(item);
-    return `<tr data-project-line-item-id="${esc(row.id)}">
-      <td><input class="line-item-name" required maxlength="300" value="${esc(row.lineItemName)}" placeholder="Line Item Name"></td>
-      <td><select class="line-item-section" required><option value="">Select section</option>${SECTIONS.map(section=>`<option value="${section}" ${row.section===section?'selected':''}>${section}</option>`).join('')}</select></td>
-      <td><input class="line-item-uom" required maxlength="40" value="${esc(row.uom)}" placeholder="Nos."></td>
-      <td><input class="line-item-required" type="number" required min="0.0001" step="any" value="${esc(row.requiredQuantity)}"></td>
-      <td><input class="line-item-dispatch" type="number" required min="0" step="any" value="${esc(row.dispatchQuantity)}"></td>
-      <td><input class="line-item-pending" type="number" step="any" value="${esc(row.pendingQuantity)}" readonly tabindex="-1"></td>
-      <td><button type="button" class="btn btn-danger btn-sm" data-delete-line-item-row>Delete Row</button></td>
-    </tr>`;
-  }
-
-  function recalculateProjectLineItemRow(row) {
-    const requiredInput = row.querySelector('.line-item-required');
-    const dispatchInput = row.querySelector('.line-item-dispatch');
-    const pendingInput = row.querySelector('.line-item-pending');
-    const required = Number(requiredInput.value);
-    const dispatch = Number(dispatchInput.value);
-    requiredInput.setCustomValidity(Number.isFinite(required) && required > 0 ? '' : 'Required Quantity must be greater than zero.');
-    dispatchInput.setCustomValidity(Number.isFinite(dispatch) && dispatch >= 0 && Number.isFinite(required) && dispatch <= required ? '' : dispatch > required ? 'Dispatch Quantity cannot exceed Required Quantity.' : 'Dispatch Quantity cannot be negative.');
-    pendingInput.value = Number.isFinite(required) && Number.isFinite(dispatch) ? Math.round(Math.max(0, required - dispatch) * 10000) / 10000 : 0;
-  }
-
-  function bindProjectLineItemRows() {
-    document.querySelectorAll('#project-line-items-body tr').forEach(row => {
-      row.querySelectorAll('.line-item-required,.line-item-dispatch').forEach(input => {
-        input.oninput = () => recalculateProjectLineItemRow(row);
-        input.onchange = () => recalculateProjectLineItemRow(row);
-      });
-      const deleteButton = row.querySelector('[data-delete-line-item-row]');
-      if (deleteButton) deleteButton.onclick = () => row.remove();
-      recalculateProjectLineItemRow(row);
-    });
-  }
-
-  function collectProjectLineItems(form) {
-    const rows = [...form.querySelectorAll('#project-line-items-body tr')];
-    rows.forEach(recalculateProjectLineItemRow);
-    if (!form.reportValidity()) return null;
-    return rows.map(row => ({
-      id: String(row.dataset.projectLineItemId || '').trim(),
-      lineItemName: String(row.querySelector('.line-item-name').value || '').trim(),
-      section: canonicalSection(row.querySelector('.line-item-section').value),
-      uom: String(row.querySelector('.line-item-uom').value || 'Nos.').trim(),
-      requiredQuantity: Number(row.querySelector('.line-item-required').value),
-      dispatchQuantity: Number(row.querySelector('.line-item-dispatch').value),
-    }));
-  }
-
-  function renderProjectItemsModal(project, records = []) {
-    openModal(`Add Items — ${project.name}`, `<form id="project-line-items-form">
-      <div class="table-wrap"><table><thead><tr><th>Line Item Name</th><th>Section</th><th>UOM</th><th>Required Quantity</th><th>Dispatch Quantity</th><th>Pending Quantity</th><th>Action</th></tr></thead><tbody id="project-line-items-body">${records.map(projectLineItemRowHtml).join('')}</tbody></table></div>
-      <div style="margin-top:14px"><button type="button" class="btn btn-secondary" id="add-project-line-item-row">+ Add Row</button></div>
-    </form>`, `<button class="btn btn-secondary" data-close-modal>Cancel</button><button class="btn btn-primary" id="save-project-line-items">Save All Items</button>`, 'modal-xl');
-    activeProjectItemsModalProjectId = project.id;
-    const body = document.getElementById('project-line-items-body');
-    if (!records.length) body.insertAdjacentHTML('beforeend', projectLineItemRowHtml());
-    bindProjectLineItemRows();
-    document.getElementById('add-project-line-item-row').onclick = () => {
-      body.insertAdjacentHTML('beforeend', projectLineItemRowHtml());
-      bindProjectLineItemRows();
-      body.lastElementChild?.querySelector('.line-item-name')?.focus();
-    };
-    document.getElementById('save-project-line-items').onclick = async event => {
-      const form = document.getElementById('project-line-items-form');
-      const items = collectProjectLineItems(form);
-      if (!items) return;
-      if (!items.length && records.length && !confirm('Save with no rows? All saved line items for this project will be removed.')) return;
-      await withOperationalMutationLock(`project-line-items:${project.id}`, event.currentTarget, async () => {
-        setFormBusy(form, true);
-        projectItemsModalSaving = true;
-        try {
-          const result = await callProjectLineItemsApi('save-all', { projectId: project.id, items });
-          for (const productionRecord of result.productionRecords || []) applyConfirmedItemRecord(productionRecord);
-          try { await loadOperationalData({ renderAfter: false }); }
-          catch (reloadError) { console.warn('Production synchronization reload failed; Realtime will reconcile it.', reloadError); }
-          closeModal();
-          if (currentRoute === 'production') renderProduction();
-          toast('Line items saved', `${items.length} item(s) saved and synchronized with Production Tracker.`);
-        } catch (error) {
-          toast('Line item save failed', error.message, 'error');
-        } finally {
-          projectItemsModalSaving = false;
-          setFormBusy(form, false);
-        }
-      });
-    };
-  }
-
-  async function openProjectItemsModal(projectId) {
-    if (!requireRole('ADMIN','MANAGER')) return;
-    const project = projectById(projectId);
-    if (!project) return toast('Project unavailable', 'Reload the Projects page and try again.', 'error');
-    const current = getCurrentUser();
-    if (current?.role === 'MANAGER' && project.managerId !== current.id) {
-      return toast('Access denied', 'Managers can add items only to projects assigned to them.', 'error');
-    }
-    openModal(`Add Items — ${project.name}`, `<div class="empty-state"><div class="empty-icon">${ICONS.clock}</div><h3>Loading line items</h3><p>Please wait while saved items are retrieved.</p></div>`, `<button class="btn btn-secondary" data-close-modal>Close</button>`, 'modal-xl');
-    activeProjectItemsModalProjectId = project.id;
-    try {
-      const result = await callProjectLineItemsApi('list', { projectId: project.id });
-      renderProjectItemsModal(project, Array.isArray(result.records) ? result.records : []);
-    } catch (error) {
-      closeModal();
-      toast('Unable to load line items', error.message, 'error');
-    }
-  }
-
-  function scheduleProjectItemsModalRefresh(projectId, delayMs = 120) {
-    if (!projectId || projectItemsModalSaving || activeProjectItemsModalProjectId !== projectId || !document.getElementById('project-line-items-form')) return;
-    clearTimeout(projectItemsModalReloadTimer);
-    projectItemsModalReloadTimer = setTimeout(async () => {
-      if (projectItemsModalSaving || activeProjectItemsModalProjectId !== projectId || !document.getElementById('project-line-items-form')) return;
-      const project = projectById(projectId);
-      if (!project) return;
-      try {
-        const result = await callProjectLineItemsApi('list', { projectId });
-        if (activeProjectItemsModalProjectId === projectId && document.getElementById('project-line-items-form')) {
-          renderProjectItemsModal(project, Array.isArray(result.records) ? result.records : []);
-        }
-      } catch (error) {
-        console.warn('Open Add Items popup could not refresh after a Production Tracker update.', error);
-      }
-    }, Math.max(0, delayMs));
   }
 
   function openProjectForm(project=null) {
@@ -2002,28 +1796,36 @@
   }
 
   function openProjectDetail(id) {
-    const p=projectById(id);if(!p)return;if(!assignedProjects().some(x=>x.id===id))return toast('Access denied','This project is not assigned to your account.','error');const items=visibleItems().filter(i=>i.projectId===id);const shortages=visibleShortages().filter(s=>s.projectId===id&&s.status!=='Resolved');
+    const p=projectById(id);if(!p)return;if(!assignedProjects().some(x=>x.id===id))return toast('Access denied','This project is not assigned to your account.','error');const items=visibleItems().filter(i=>i.projectId===id);const shortages=state.shortages.filter(s=>s.projectId===id&&s.status!=='Resolved');
     openModal(p.name,`<div class="grid grid-4">
       ${miniMetric('Project Code',p.code)}${miniMetric('Job Number',p.jobNumber||'—')}${miniMetric('Completion',projectCompletion(p.id)+'%')}${miniMetric('Target Date',fmtDate(p.targetDate))}
     </div>
     <div class="grid grid-2" style="margin-top:18px"><div class="card"><div class="card-body"><h3 class="mt-0">Project Details</h3><p class="small muted">Client</p><strong>${esc(p.client||'—')}</strong><p class="small muted">Site</p><strong>${esc(p.site||'—')}</strong><p class="small muted">Manager</p><strong>${esc(userById(p.managerId)?.name||'Unassigned')}</strong><p class="small muted">Executives</p><strong>${esc((p.executiveIds||[]).map(x=>userById(x)?.name).filter(Boolean).join(', ')||'Unassigned')}</strong></div></div><div class="card"><div class="card-body"><h3 class="mt-0">Production Summary</h3>${STAGES.map((s,idx)=>{const count=items.filter(i=>i.currentStage===idx).length;return `<div style="margin:10px 0"><div class="progress-meta"><span>${esc(s)}</span><strong>${count}</strong></div><div class="progress-line"><span style="width:${items.length?count/items.length*100:0}%"></span></div></div>`}).join('')}</div></div></div>
-    <h3 style="margin-top:22px">Items (${items.length})</h3><div class="table-wrap"><table><thead><tr><th>Item</th><th>Section</th><th>Assigned To</th><th>BOM</th><th>Quantity</th><th>Current Stage</th><th>Status</th><th></th></tr></thead><tbody>${items.length?items.map(i=>`<tr><td>${esc(i.itemName)}</td><td>${esc(itemSection(i))}</td><td>${esc(assignedExecutiveName(i))}</td><td>${esc(i.bomNumber||'—')}</td><td>${fmtNumber(i.quantity)}</td><td>${esc(STAGES[i.currentStage])}</td><td>${statusChip(i.approvalStatus==='SUBMITTED'?'Submitted':i.status)}</td><td><button class="btn btn-secondary btn-sm" data-modal-item="${i.id}">Open</button></td></tr>`).join(''):'<tr><td colspan="8" class="muted">No items in this project.</td></tr>'}</tbody></table></div>
+    <h3 style="margin-top:22px">Items (${items.length})</h3><div class="table-wrap"><table><thead><tr><th>Item</th><th>Section</th><th>BOM</th><th>Quantity</th><th>Assigned To</th><th>Current Stage</th><th>Status</th><th></th></tr></thead><tbody>${items.length?items.map(i=>`<tr><td>${esc(i.itemName)}</td><td>${esc(itemSection(i))}</td><td>${esc(i.bomNumber||'—')}</td><td>${fmtNumber(i.quantity)}</td><td>${esc(assignedExecutive(i)?.name||'Unassigned')}</td><td>${esc(STAGES[i.currentStage])}</td><td>${statusChip(taskStatus(i))}</td><td><button class="btn btn-secondary btn-sm" data-modal-item="${i.id}">Open</button></td></tr>`).join(''):'<tr><td colspan="8" class="muted">No items in this project.</td></tr>'}</tbody></table></div>
     ${shortages.length?`<h3 style="margin-top:22px">Open Shortages</h3><div class="info-banner warning"><div>⚠</div><div><strong>${shortages.length} shortage(s) require attention</strong><p>${shortages.map(s=>s.material).join(', ')}</p></div></div>`:''}`, `<button class="btn btn-secondary" data-close-modal>Close</button>`,'modal-xl');
     document.querySelectorAll('[data-modal-item]').forEach(b=>b.onclick=()=>{closeModal();openItemDetail(b.dataset.modalItem);});
   }
   function miniMetric(label,value){return `<div class="card"><div class="card-body"><span class="small muted">${esc(label)}</span><strong style="display:block;font-size:18px;margin-top:7px">${esc(value)}</strong></div></div>`;}
 
   function renderProduction() {
-    setPageTitle('Production Tracker','Seven-stage manufacturing workflow');
+    setPageTitle('Production Tracker','Nine-stage manufacturing workflow');
     const items=visibleItems(),projects=assignedProjects();
     const page=document.getElementById('page-content');
-    page.innerHTML=`${pageToolbar('Production Progress Tracker','Track every item from planning to ready for dispatch.',`<button class="btn btn-primary" id="add-item">+ Add Item</button>${can('ADMIN','MANAGER')?'<button class="btn btn-secondary" id="assign-section-work">Assign Section Work</button>':''}`)}
-      <div class="filter-bar"><div class="filter-item search-wide"><input id="item-search" placeholder="Search item, BOM, job number, section or executive"></div><div class="filter-item"><select id="item-project"><option value="">All projects</option>${projects.map(project=>`<option value="${project.id}">${esc(project.name)}</option>`).join('')}</select></div><div class="filter-item"><select id="item-section"><option value="">All sections</option>${SECTIONS.map(section=>`<option>${section}</option>`).join('')}</select></div><div class="filter-item"><select id="item-stage"><option value="">All stages</option>${STAGES.map((stage,index)=>`<option value="${index}">${esc(stage)}</option>`).join('')}</select></div><div class="filter-item"><select id="item-status"><option value="">All statuses</option><option>In Progress</option><option>Delayed</option><option>Completed</option><option>On Hold</option></select></div></div>
-      <section class="card table-card"><div class="table-wrap"><table><thead><tr><th>Item</th><th>Project</th><th>Section</th><th>Assigned To</th><th>BOM / Job</th><th>Qty</th><th>Current Stage</th><th>Progress</th><th>Status</th><th>Action</th></tr></thead><tbody id="items-body"></tbody></table></div><div class="table-footer"><span id="items-count"></span><span>Open an item to view its complete timeline</span></div></section>`;
-    const draw=()=>{const q=document.getElementById('item-search').value.toLowerCase(),pid=document.getElementById('item-project').value,section=document.getElementById('item-section').value,stage=document.getElementById('item-stage').value,status=document.getElementById('item-status').value;const rows=items.filter(item=>(!q||[item.itemName,item.bomNumber,item.jobNumber,itemSection(item),assignedExecutiveName(item)].some(value=>String(value||'').toLowerCase().includes(q)))&&(!pid||item.projectId===pid)&&(!section||itemSection(item)===section)&&(!stage||String(item.currentStage)===stage)&&(!status||item.status===status));document.getElementById('items-count').textContent=`${rows.length} item(s)`;document.getElementById('items-body').innerHTML=rows.length?rows.map(item=>`<tr><td><strong>${esc(item.itemName)}</strong><div class="small muted">${esc(item.size||item.site||'')}</div></td><td>${esc(projectById(item.projectId)?.name||'Unknown')}</td><td>${statusChip(itemSection(item))}</td><td>${esc(assignedExecutiveName(item))}</td><td>${esc(item.bomNumber||'—')}<div class="small muted">${esc(item.jobNumber||'—')}</div></td><td>${fmtNumber(item.quantity)}${item.quantityVerified?'':' <span title="Unverified">⚠</span>'}</td><td>${canUpdateItemStage(item)?`<select class="table-stage-select" data-stage-item="${item.id}" aria-label="Update current stage for ${esc(item.itemName)}">${STAGES.map((stageName,index)=>`<option value="${index}" ${Number(item.currentStage)===index?'selected':''}>${esc(stageName)}</option>`).join('')}</select>`:esc(STAGES[item.currentStage]||'PLANNING')}</td><td style="min-width:140px"><div class="progress-line"><span style="width:${completionPercent(item)}%"></span></div><div class="progress-meta"><span>${completionPercent(item)}%</span><span>${item.approvalStatus==='SUBMITTED'?'Awaiting approval':''}</span></div></td><td>${statusChip(item.approvalStatus==='SUBMITTED'?'Submitted':item.status)}</td><td><button class="btn btn-secondary btn-sm" data-view-item="${item.id}">Open</button></td></tr>`).join(''):`<tr><td colspan="10">${emptyState('⚙','No production items','Import Excel data or add an item manually.')}</td></tr>`;document.querySelectorAll('[data-view-item]').forEach(button=>button.onclick=()=>openItemDetail(button.dataset.viewItem));document.querySelectorAll('[data-stage-item]').forEach(select=>select.onchange=()=>updateItemStageDirect(select.dataset.stageItem,select.value,select));};
+    page.innerHTML=`${pageToolbar('Production Progress Tracker','Track every item from planning to ready for dispatch.',`${canAssignTasks()?'<button class="btn btn-secondary" id="assign-by-section">Assign by Section</button>':''}<button class="btn btn-primary" id="add-item">+ Add Item</button>`)}
+      <div class="filter-bar"><div class="filter-item search-wide"><input id="item-search" placeholder="Search item, section, executive, BOM or job number"></div><div class="filter-item"><select id="item-project"><option value="">All projects</option>${projects.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></div><div class="filter-item"><select id="item-section"><option value="">All sections</option>${SECTIONS.map(section=>`<option>${esc(section)}</option>`).join('')}<option value="Not Specified">Not Specified</option></select></div><div class="filter-item"><select id="item-stage"><option value="">All stages</option>${STAGES.map((s,i)=>`<option value="${i}">${esc(s)}</option>`).join('')}</select></div><div class="filter-item"><select id="item-status"><option value="">All statuses</option><option>Pending Assignment</option><option>In Progress</option><option>Awaiting Approval</option><option>Delayed</option><option>Completed</option><option>On Hold</option></select></div></div>
+      <section class="card table-card"><div class="table-wrap"><table><thead><tr><th>Item</th><th>Project</th><th>Section</th><th>BOM / Job</th><th>Qty</th><th>Assigned To</th><th>Due / Priority</th><th>Current Stage</th><th>Progress</th><th>Status</th><th>Action</th></tr></thead><tbody id="items-body"></tbody></table></div><div class="table-footer"><span id="items-count"></span><span>Open an item to view its complete timeline</span></div></section>`;
+    const draw=()=>{
+      const q=document.getElementById('item-search').value.toLowerCase(),pid=document.getElementById('item-project').value,section=document.getElementById('item-section').value,stage=document.getElementById('item-stage').value,status=document.getElementById('item-status').value;
+      const rows=items.filter(i=>(!q||[i.itemName,i.bomNumber,i.jobNumber,i.section,assignedExecutive(i)?.name].some(v=>String(v||'').toLowerCase().includes(q)))&&(!pid||i.projectId===pid)&&(!section||(section==='Not Specified'?!canonicalSection(i.section):canonicalSection(i.section)===section))&&(!stage||String(i.currentStage)===stage)&&(!status||taskStatus(i)===status));
+      document.getElementById('items-count').textContent=`${rows.length} item(s)`;
+      document.getElementById('items-body').innerHTML=rows.length?rows.map(i=>`<tr><td><strong>${esc(i.itemName)}</strong><div class="small muted">${esc(i.size||i.site||'')}</div></td><td>${esc(projectById(i.projectId)?.name||'Unknown')}</td><td>${statusChip(itemSection(i))}</td><td>${esc(i.bomNumber||'—')}<div class="small muted">${esc(i.jobNumber||'—')}</div></td><td>${fmtNumber(i.quantity)}${i.quantityVerified?'':' <span title="Unverified">⚠</span>'}</td><td>${esc(assignedExecutive(i)?.name||'Unassigned')}<div class="small muted">${i.assignedAt?fmtDate(i.assignedAt):''}</div></td><td>${fmtDate(taskDueDate(i))}<div class="small muted">${esc(taskPriority(i))}</div></td><td>${canUpdateItemStage(i)?`<select class="table-stage-select" data-stage-item="${i.id}" aria-label="Update current stage for ${esc(i.itemName)}">${STAGES.map((s,idx)=>`<option value="${idx}" ${Number(i.currentStage)===idx?'selected':''}>${esc(s)}</option>`).join('')}</select>`:esc(STAGES[i.currentStage]||'PLANNING')}</td><td style="min-width:140px"><div class="progress-line"><span style="width:${completionPercent(i)}%"></span></div><div class="progress-meta"><span>${completionPercent(i)}%</span><span>${i.approvalStatus==='SUBMITTED'?'Awaiting approval':''}</span></div></td><td>${statusChip(taskStatus(i))}</td><td><div class="table-actions"><button class="btn btn-secondary btn-sm" data-view-item="${i.id}">Open</button>${canAssignTasks()?`<button class="btn btn-ghost btn-sm" data-assign-item="${i.id}">${i.assignedExecutiveId?'Reassign':'Assign'}</button>`:''}</div></td></tr>`).join(''):`<tr><td colspan="11">${emptyState('⚙','No production items','Import Excel data or add an item manually.')}</td></tr>`;
+      document.querySelectorAll('[data-view-item]').forEach(button=>button.onclick=()=>openItemDetail(button.dataset.viewItem));
+      document.querySelectorAll('[data-stage-item]').forEach(select=>select.onchange=()=>updateItemStageDirect(select.dataset.stageItem,select.value,select));
+      document.querySelectorAll('[data-assign-item]').forEach(button=>button.onclick=()=>openTaskAssignment(button.dataset.assignItem));
+    };
     draw();['item-search','item-project','item-section','item-stage','item-status'].forEach(id=>document.getElementById(id).addEventListener(id==='item-search'?'input':'change',draw));
-    if(document.getElementById('add-item'))document.getElementById('add-item').onclick=()=>openItemForm();
-    if(document.getElementById('assign-section-work'))document.getElementById('assign-section-work').onclick=()=>openSectionAssignmentModal();
+    document.getElementById('add-item').onclick=()=>openItemForm();
+    if(document.getElementById('assign-by-section'))document.getElementById('assign-by-section').onclick=()=>openTaskAssignment();
   }
 
   function openItemForm(item=null) {
@@ -2031,7 +1833,7 @@
     if(item&&!visibleItems().some(x=>x.id===item.id))return toast('Access denied','This production item is not assigned to your account.','error');
     const projects=assignedProjects();
     if(!projects.length)return toast('Create a project first','Production items must belong to a project.','warning');
-    openModal(item?'Edit Production Item':'Add Production Item',`<form id="item-form"><div class="form-grid"><div class="form-group"><label>Project *</label><select name="projectId" required>${projects.map(p=>`<option value="${p.id}" ${item?.projectId===p.id?'selected':''}>${esc(p.name)}</option>`).join('')}</select></div><div class="form-group"><label>Section *</label><select name="section" required><option value="">Select section</option>${SECTIONS.map(section=>`<option value="${section}" ${itemSection(item)===section?'selected':''}>${section}</option>`).join('')}</select></div><div class="form-group"><label>Quantity</label><input name="quantity" type="number" min="0" step="any" value="${item?.quantity??0}"></div><div class="form-group" style="grid-column:1/-1"><label>Item name *</label><textarea name="itemName" required placeholder="Enter complete item description">${esc(item?.itemName||'')}</textarea></div><div class="form-group"><label>BOM number</label><input name="bomNumber" value="${esc(item?.bomNumber||'')}"></div><div class="form-group"><label>Job number</label><input name="jobNumber" value="${esc(item?.jobNumber||'')}"></div><div class="form-group"><label>Size</label><input name="size" value="${esc(item?.size||'')}"></div>${item?`<div class="form-group"><label>Current stage</label><input value="${esc(STAGES[item.currentStage])}" disabled><div class="help-text">Use the stage workflow controls to move this item.</div></div>`:`<div class="form-group"><label>Current stage</label><select name="currentStage">${STAGES.map((s,i)=>`<option value="${i}">${esc(s)}</option>`).join('')}</select></div>`}</div></form>`,`<button class="btn btn-secondary" data-close-modal>Cancel</button><button class="btn btn-primary" id="save-item">${item?'Save Changes':'Add Item'}</button>`);
+    openModal(item?'Edit Production Item':'Add Production Item',`<form id="item-form"><div class="form-grid"><div class="form-group"><label>Project *</label><select name="projectId" required>${projects.map(p=>`<option value="${p.id}" ${item?.projectId===p.id?'selected':''}>${esc(p.name)}</option>`).join('')}</select></div><div class="form-group"><label>Section</label><select name="section"><option value="">Not Specified</option>${SECTIONS.map(section=>`<option value="${section}" ${canonicalSection(item?.section)===section?'selected':''}>${esc(section)}</option>`).join('')}</select></div><div class="form-group"><label>Quantity</label><input name="quantity" type="number" min="0" step="any" value="${item?.quantity??0}"></div><div class="form-group" style="grid-column:1/-1"><label>Item name *</label><textarea name="itemName" required placeholder="Enter complete item description">${esc(item?.itemName||'')}</textarea></div><div class="form-group"><label>BOM number</label><input name="bomNumber" value="${esc(item?.bomNumber||'')}"></div><div class="form-group"><label>Job number</label><input name="jobNumber" value="${esc(item?.jobNumber||'')}"></div><div class="form-group"><label>Size</label><input name="size" value="${esc(item?.size||'')}"></div>${item?`<div class="form-group"><label>Current stage</label><input value="${esc(STAGES[item.currentStage])}" disabled><div class="help-text">Use the stage workflow controls to move this item.</div></div>`:`<div class="form-group"><label>Current stage</label><select name="currentStage">${STAGES.map((s,i)=>`<option value="${i}">${esc(s)}</option>`).join('')}</select></div>`}</div></form>`,`<button class="btn btn-secondary" data-close-modal>Cancel</button><button class="btn btn-primary" id="save-item">${item?'Save Changes':'Add Item'}</button>`);
     document.getElementById('save-item').onclick=async event=>{
       const f=document.getElementById('item-form');if(!f.reportValidity())return;
       const fd=new FormData(f),p=projectById(String(fd.get('projectId')));if(!p)return toast('Project unavailable','Reload the data and try again.','error');
@@ -2039,13 +1841,12 @@
         setFormBusy(f,true);
         try{
           if(item){
-            Object.assign(item,{projectId:p.id,projectLineItemId:item.projectLineItemId||item.id,itemName:String(fd.get('itemName')).trim(),rawItemName:String(fd.get('itemName')).trim(),site:p.site,size:String(fd.get('size')||''),quantity:number(fd.get('quantity')),uom:String(item.uom||'Nos.').trim(),dispatchQuantity:number(item.dispatchQuantity||0),pendingQuantity:Math.max(0,number(fd.get('quantity'))-number(item.dispatchQuantity||0)),quantityVerified:true,section:canonicalSection(fd.get('section')),assignedExecutiveId:itemSection(item)===canonicalSection(fd.get('section'))?String(item.assignedExecutiveId||''):'',assignedBy:itemSection(item)===canonicalSection(fd.get('section'))?String(item.assignedBy||''):'',assignedAt:itemSection(item)===canonicalSection(fd.get('section'))?String(item.assignedAt||''):'',bomNumber:String(fd.get('bomNumber')||''),jobNumber:String(fd.get('jobNumber')||p.jobNumber||''),updatedAt:nowISO()});
+            Object.assign(item,{projectId:p.id,itemName:String(fd.get('itemName')).trim(),rawItemName:String(fd.get('itemName')).trim(),section:canonicalSection(fd.get('section')),site:p.site,size:String(fd.get('size')||''),quantity:number(fd.get('quantity')),quantityVerified:true,bomNumber:String(fd.get('bomNumber')||''),jobNumber:String(fd.get('jobNumber')||p.jobNumber||''),updatedAt:nowISO()});
             item.history=item.history||[];item.history.push(historyEvent(item,'Item Details Updated',item.status,'Production item master details updated.'));
             audit('UPDATE','Production',`Updated production item ${item.itemName}`,item.id);
           }else{
-            const idx=Number(fd.get('currentStage')),itemName=String(fd.get('itemName')).trim(),section=canonicalSection(fd.get('section')),uom='Nos.',required=number(fd.get('quantity')),dispatch=0;const existing=state.items.find(existingItem=>existingItem.projectId===p.id&&itemSection(existingItem)===section&&String(existingItem.itemName||'').trim().toLowerCase()===itemName.toLowerCase()&&String(existingItem.uom||'Nos.').trim().toUpperCase()===uom.toUpperCase());
-            if(existing){const existingDispatch=number(existing.dispatchQuantity||0);Object.assign(existing,{projectLineItemId:existing.projectLineItemId||existing.id,itemName,rawItemName:itemName,section,uom,quantity:required,dispatchQuantity:existingDispatch,pendingQuantity:Math.max(0,required-existingDispatch),quantityVerified:true,updatedAt:nowISO()});existing.history=existing.history||[];existing.history.push(historyEvent(existing,'Item Details Updated',existing.status,'Production item quantities synchronized with Projects Add Items.'));audit('UPDATE','Production',`Updated existing production item ${existing.itemName}`,existing.id);}
-            else{const itemId=uid('ITM');const i={id:itemId,projectId:p.id,projectLineItemId:itemId,itemName,rawItemName:itemName,section,assignedExecutiveId:getCurrentUser().role==='EXECUTIVE'?getCurrentUser().id:'',assignedBy:getCurrentUser().role==='EXECUTIVE'?getCurrentUser().id:'',assignedAt:getCurrentUser().role==='EXECUTIVE'?nowISO():'',site:p.site,size:String(fd.get('size')||''),quantity:required,uom,dispatchQuantity:dispatch,pendingQuantity:Math.max(0,required-dispatch),quantityVerified:true,bomNumber:String(fd.get('bomNumber')||''),jobNumber:String(fd.get('jobNumber')||p.jobNumber||''),currentStage:idx,currentStageName:STAGES[idx],status:'In Progress',approvalStatus:'',shortages:'',remarks:'',createdAt:nowISO(),updatedAt:nowISO(),history:[{id:uid('HIS'),stageIndex:idx,stageName:STAGES[idx],action:'Created',status:'In Progress',updatedBy:getCurrentUser().id,updatedByName:getCurrentUser().name,date:nowISO(),remarks:'Production item created manually.',attachments:[]}]};state.items.push(i);audit('CREATE','Production',`Created production item ${i.itemName}`,i.id);}
+            const idx=Number(fd.get('currentStage')),creator=getCurrentUser(),selfAssigned=creator.role==='EXECUTIVE';const i={id:uid('ITM'),projectId:p.id,itemName:String(fd.get('itemName')).trim(),rawItemName:String(fd.get('itemName')).trim(),section:canonicalSection(fd.get('section')),site:p.site,size:String(fd.get('size')||''),quantity:number(fd.get('quantity')),quantityVerified:true,bomNumber:String(fd.get('bomNumber')||''),jobNumber:String(fd.get('jobNumber')||p.jobNumber||''),assignedExecutiveId:selfAssigned?creator.id:'',assignedExecutiveName:selfAssigned?creator.name:'',assignedById:selfAssigned?creator.id:'',assignedByName:selfAssigned?creator.name:'',assignedAt:selfAssigned?nowISO():'',dueDate:p.targetDate||'',priority:p.priority||'Medium',currentStage:idx,currentStageName:STAGES[idx],status:'In Progress',approvalStatus:'',shortages:'',remarks:'',createdAt:nowISO(),updatedAt:nowISO(),history:[{id:uid('HIS'),stageIndex:idx,stageName:STAGES[idx],action:'Created',status:'In Progress',updatedBy:getCurrentUser().id,updatedByName:getCurrentUser().name,date:nowISO(),remarks:'Production item created manually.',attachments:[]}]};
+            state.items.push(i);audit('CREATE','Production',`Created production item ${i.itemName}`,i.id);
           }
           await saveState();
           closeModal();renderProduction();toast(item?'Item updated':'Item created','Production item saved successfully.');
@@ -2055,14 +1856,66 @@
     };
   }
 
+  function openTaskAssignment(itemId='') {
+    if(!requireRole('ADMIN','MANAGER'))return;
+    const item=itemId?itemById(itemId):null;
+    if(itemId&&!item)return toast('Item unavailable','Reload the production tracker and try again.','error');
+    const executives=assignmentExecutives();
+    if(!executives.length)return toast('No active Executives','Create or activate an Executive user before assigning work.','warning');
+    const projects=assignedProjects();
+    const selectedSection=canonicalSection(item?.section);
+    openModal(item?'Assign Production Task':'Assign Tasks by Section',`<form id="assignment-form"><div class="form-grid">
+      ${item?`<div class="form-group" style="grid-column:1/-1"><label>Production item</label><input value="${esc(projectById(item.projectId)?.name||'')} — ${esc(item.itemName)}" disabled></div>`:`<div class="form-group"><label>Project</label><select name="projectId"><option value="">All projects</option>${projects.map(project=>`<option value="${project.id}">${esc(project.name)}</option>`).join('')}</select></div>`}
+      <div class="form-group"><label>Section *</label><select name="section" required><option value="">Select Section</option>${SECTIONS.map(section=>`<option value="${section}" ${selectedSection===section?'selected':''}>${esc(section)}</option>`).join('')}</select></div>
+      <div class="form-group"><label>Assign to Executive *</label><select name="executiveId" ${item?'':'required'}>${item?'<option value="">Unassigned</option>':''}${executives.map(executive=>`<option value="${executive.id}" ${item?.assignedExecutiveId===executive.id?'selected':''}>${esc(executive.name)}</option>`).join('')}</select></div>
+      <div class="form-group"><label>Due date</label><input name="dueDate" type="date" value="${item?taskDueDate(item):''}"></div>
+      <div class="form-group"><label>Priority</label><select name="priority">${TASK_PRIORITIES.map(priority=>`<option ${taskPriority(item)===priority?'selected':''}>${priority}</option>`).join('')}</select></div>
+      ${item?'':`<div class="form-group"><label>Assignment scope</label><select name="scope"><option value="unassigned">Only unassigned items</option><option value="all">All matching items (reassign)</option></select></div>`}
+    </div><div class="info-banner"><div>↗</div><div><strong>Section-based assignment</strong><p>${item?'This item will be assigned or reassigned using its Section.':'Every matching production item will use the selected Section, Executive, due date and priority.'}</p></div></div></form>`,`<button class="btn btn-secondary" data-close-modal>Cancel</button><button class="btn btn-primary" id="save-assignment">${item?'Save Assignment':'Assign Matching Tasks'}</button>`);
+    document.getElementById('save-assignment').onclick=async event=>{
+      const form=document.getElementById('assignment-form');if(!form.reportValidity())return;
+      const fd=new FormData(form),section=canonicalSection(fd.get('section')),executiveId=String(fd.get('executiveId')||''),executive=userById(executiveId),dueDate=String(fd.get('dueDate')||''),priority=String(fd.get('priority')||'Medium'),actor=getCurrentUser();
+      if(!section)return toast('Invalid Section',`Select one of: ${SECTIONS.join(', ')}.`,'error');
+      if(!item&&!executive)return toast('Executive required','Select an Executive for the section assignment.','error');
+      const projectId=String(fd.get('projectId')||''),scope=String(fd.get('scope')||'all');
+      const targets=item?[item]:visibleItems().filter(row=>canonicalSection(row.section)===section&&(!projectId||row.projectId===projectId)&&(scope!=='unassigned'||!row.assignedExecutiveId));
+      if(!targets.length)return toast('No matching tasks','No production items match the selected Section and scope.','warning');
+      await withOperationalMutationLock(`task-assignment:${item?.id||section}:${executiveId}`,event.currentTarget,async()=>{
+        setFormBusy(form,true);
+        try{
+          const assignedAt=nowISO();
+          targets.forEach(target=>{
+            target.section=section;
+            target.assignedExecutiveId=executiveId;
+            target.assignedExecutiveName=executive?.name||'';
+            target.assignedById=actor.id;
+            target.assignedByName=actor.name;
+            target.assignedAt=executiveId?assignedAt:'';
+            target.dueDate=dueDate||target.dueDate||target.targetDate||projectById(target.projectId)?.targetDate||'';
+            target.priority=priority||target.priority||projectById(target.projectId)?.priority||'Medium';
+            target.updatedAt=assignedAt;
+            target.history=target.history||[];
+            target.history.push(historyEvent(target,executiveId?'Task Assigned':'Task Unassigned',executiveId?'Assigned':'Unassigned',executiveId?`Assigned to ${executive.name} for ${section}. Due ${dueDate||'not specified'}; priority ${priority}.`:`Assignment removed by ${actor.name}.`));
+          });
+          if(executiveId)notify(executiveId,item?'Production task assigned':'Section work assigned',item?`${item.itemName} (${section}) has been assigned to you.`:`${targets.length} ${section} production task(s) have been assigned to you.`,'Assignment',item?.id||targets[0].id);
+          audit(executiveId?'ASSIGN':'UNASSIGN','Production',`${executiveId?'Assigned':'Unassigned'} ${targets.length} ${section} task(s)${executive?` to ${executive.name}`:''}`,item?.id||'');
+          await saveState();
+          closeModal();renderProduction();toast(executiveId?'Tasks assigned':'Task unassigned',`${targets.length} production item(s) updated successfully.`);
+        }catch(error){toast('Task assignment failed',error.message,'error');}
+        finally{setFormBusy(form,false);}
+      });
+    };
+  }
+
   function openItemDetail(id) {
     const item=itemById(id);if(!item)return;if(!visibleItems().some(x=>x.id===id))return toast('Access denied','This production item is not assigned to your account.','error');const project=projectById(item.projectId),user=getCurrentUser();const canApprove=['ADMIN','MANAGER'].includes(user.role)&&item.approvalStatus==='SUBMITTED';
     const timeline=STAGES.map((s,idx)=>{let cls='pending',symbol=idx+1;if(idx<item.currentStage){cls='completed';symbol='✓';}else if(idx===item.currentStage){cls=item.status==='Delayed'?'delayed':item.approvalStatus==='SUBMITTED'?'submitted':'current';symbol=item.status==='Delayed'?'!':item.approvalStatus==='SUBMITTED'?'↥':idx+1;}const hist=[...(item.history||[])].reverse().find(h=>h.stageIndex===idx);return `<div class="timeline-stage ${cls}"><div class="stage-circle">${symbol}</div><div class="stage-name">${esc(s)}</div><div class="stage-meta">${hist?`${fmtDate(hist.date)}<br>${esc(hist.updatedByName||'')}`:idx<item.currentStage?'Imported stage':'Pending'}</div></div>`}).join('');
-    openModal(item.itemName,`<div class="info-banner"><div>⚙</div><div><strong>${esc(project?.name||'Unknown project')}</strong><p>BOM: ${esc(item.bomNumber||'—')} • Job: ${esc(item.jobNumber||'—')} • Quantity: ${fmtNumber(item.quantity)}</p></div></div><div class="timeline">${timeline}</div>
-      <div class="grid grid-3" style="margin-top:18px">${miniMetric('Current Stage',STAGES[item.currentStage])}${miniMetric('Progress',completionPercent(item)+'%')}${miniMetric('Status',item.approvalStatus==='SUBMITTED'?'Awaiting Approval':item.status)}</div>
+    openModal(item.itemName,`<div class="info-banner"><div>⚙</div><div><strong>${esc(project?.name||'Unknown project')}</strong><p>Section: ${esc(itemSection(item))} • BOM: ${esc(item.bomNumber||'—')} • Job: ${esc(item.jobNumber||'—')} • Quantity: ${fmtNumber(item.quantity)} • Assigned to: ${esc(assignedExecutive(item)?.name||'Unassigned')}</p></div></div><div class="timeline">${timeline}</div>
+      <div class="grid grid-4" style="margin-top:18px">${miniMetric('Current Stage',STAGES[item.currentStage])}${miniMetric('Progress',completionPercent(item)+'%')}${miniMetric('Due Date',fmtDate(taskDueDate(item)))}${miniMetric('Priority',taskPriority(item))}</div>
       <div class="tabs" style="margin-top:20px"><button class="tab active" data-item-tab="history">Stage History</button><button class="tab" data-item-tab="details">Item Details</button><button class="tab" data-item-tab="attachments">Attachments</button></div><div id="item-tab-content">${itemHistoryHtml(item)}</div>`,
-      `<button class="btn btn-secondary" data-close-modal>Close</button>${can('ADMIN','MANAGER')?'<button class="btn btn-secondary" id="edit-item">Edit Item</button>':''}${can('ADMIN','MANAGER')?'<button class="btn btn-danger" id="delete-item">Delete Item</button>':''}${canUpdateItemStage(item)&&item.approvalStatus!=='SUBMITTED'&&item.currentStage<STAGES.length-1?'<button class="btn btn-primary" id="update-stage">Update Stage</button>':''}${canApprove?'<button class="btn btn-danger" id="reject-stage">Reject</button><button class="btn btn-success" id="approve-stage">Approve & Continue</button>':''}${item.currentStage===STAGES.length-1&&item.status!=='Completed'&&can('ADMIN','MANAGER')?'<button class="btn btn-success" id="complete-item">Mark Completed</button>':''}`,'modal-xl');
+      `<button class="btn btn-secondary" data-close-modal>Close</button>${canAssignTasks()?'<button class="btn btn-secondary" id="assign-item-detail">Assign Task</button>':''}${can('ADMIN','MANAGER')?'<button class="btn btn-secondary" id="edit-item">Edit Item</button>':''}${can('ADMIN','MANAGER')?'<button class="btn btn-danger" id="delete-item">Delete Item</button>':''}${canUpdateItemStage(item)&&item.approvalStatus!=='SUBMITTED'&&item.currentStage<8?'<button class="btn btn-primary" id="update-stage">Update Stage</button>':''}${canApprove?'<button class="btn btn-danger" id="reject-stage">Reject</button><button class="btn btn-success" id="approve-stage">Approve & Continue</button>':''}${item.currentStage===8&&item.status!=='Completed'&&can('ADMIN','MANAGER')?'<button class="btn btn-success" id="complete-item">Mark Completed</button>':''}`,'modal-xl');
     document.querySelectorAll('[data-item-tab]').forEach(b=>b.onclick=()=>{document.querySelectorAll('[data-item-tab]').forEach(x=>x.classList.toggle('active',x===b));const c=document.getElementById('item-tab-content');c.innerHTML=b.dataset.itemTab==='history'?itemHistoryHtml(item):b.dataset.itemTab==='details'?itemDetailsHtml(item,project):itemAttachmentsHtml(item);bindAttachmentLinks();});
+    if(document.getElementById('assign-item-detail'))document.getElementById('assign-item-detail').onclick=()=>{closeModal();openTaskAssignment(item.id);};
     if(document.getElementById('edit-item'))document.getElementById('edit-item').onclick=()=>{closeModal();openItemForm(item);};
     if(document.getElementById('delete-item'))document.getElementById('delete-item').onclick=()=>deleteItem(item.id);
     if(document.getElementById('update-stage'))document.getElementById('update-stage').onclick=()=>openStageUpdate(item);
@@ -2097,7 +1950,7 @@
   }
 
   function itemHistoryHtml(item){const h=[...(item.history||[])].reverse();return h.length?`<div class="activity-list">${h.map(x=>`<div class="activity-item"><div class="activity-icon">${x.status==='Approved'?'✓':x.status==='Rejected'?'!':'⚙'}</div><div class="activity-main"><strong>${esc(x.stageName)} • ${esc(x.action)}</strong><span>${esc(x.remarks||'No remarks')}<br>${esc(x.updatedByName||'Unknown user')} • ${esc(x.status||'')}</span>${(x.attachments||[]).length?`<div>${x.attachments.map(a=>`<button class="file-chip" data-file-id="${a.id}" data-item-id="${item.id}">▤ ${esc(a.name)}</button>`).join('')}</div>`:''}</div><div class="activity-time">${fmtDate(x.date,true)}</div></div>`).join('')}</div>`:emptyState('◷','No stage history','Updates will appear here.');}
-  function itemDetailsHtml(i,p){return `<div class="grid grid-2"><div>${detailRow('Project',p?.name)}${detailRow('Section',itemSection(i))}${detailRow('Assigned To',assignedExecutiveName(i))}${detailRow('Due Date',fmtDate(itemDueDate(i)))}${detailRow('Priority',itemPriority(i))}${detailRow('Site',i.site||p?.site)}${detailRow('BOM Number',i.bomNumber)}${detailRow('Job Number',i.jobNumber)}${detailRow('Size',i.size)}${detailRow('Quantity',fmtNumber(i.quantity))}</div><div>${detailRow('Current Stage',STAGES[i.currentStage])}${detailRow('Status',i.status)}${detailRow('Quantity Verified',i.quantityVerified?'Yes':'No')}${detailRow('Shortages',i.shortages||'None')}${detailRow('Created',fmtDate(i.createdAt,true))}${detailRow('Updated',fmtDate(i.updatedAt,true))}</div></div>`;}
+  function itemDetailsHtml(i,p){return `<div class="grid grid-2"><div>${detailRow('Project',p?.name)}${detailRow('Section',itemSection(i))}${detailRow('Site',i.site||p?.site)}${detailRow('BOM Number',i.bomNumber)}${detailRow('Job Number',i.jobNumber)}${detailRow('Size',i.size)}${detailRow('Quantity',fmtNumber(i.quantity))}</div><div>${detailRow('Assigned To',assignedExecutive(i)?.name||'Unassigned')}${detailRow('Assigned By',assignedByName(i))}${detailRow('Due Date',fmtDate(taskDueDate(i)))}${detailRow('Priority',taskPriority(i))}${detailRow('Current Stage',STAGES[i.currentStage])}${detailRow('Status',taskStatus(i))}${detailRow('Quantity Verified',i.quantityVerified?'Yes':'No')}${detailRow('Shortages',i.shortages||'None')}${detailRow('Created',fmtDate(i.createdAt,true))}${detailRow('Updated',fmtDate(i.updatedAt,true))}</div></div>`;}
   function detailRow(label,value){return `<div class="setting-row"><div class="setting-copy"><span>${esc(label)}</span></div><strong>${esc(value||'—')}</strong></div>`;}
   function itemAttachmentsHtml(item){const files=(item.history||[]).flatMap(h=>(h.attachments||[]).map(a=>({...a,stage:h.stageName,date:h.date})));return files.length?`<div class="table-wrap"><table><thead><tr><th>File</th><th>Stage</th><th>Uploaded</th><th>Action</th></tr></thead><tbody>${files.map(a=>`<tr><td>${esc(a.name)}<div class="small muted">${fmtNumber(a.size/1024)} KB</div></td><td>${esc(a.stage)}</td><td>${fmtDate(a.date,true)}</td><td><button class="btn btn-secondary btn-sm" data-file-id="${a.id}" data-item-id="${item.id}">Open</button></td></tr>`).join('')}</tbody></table></div>`:emptyState('▤','No attachments','Files uploaded during stage updates will appear here.');}
   function bindAttachmentLinks(){document.querySelectorAll('[data-file-id]').forEach(b=>b.onclick=()=>{const item=itemById(b.dataset.itemId);const file=(item.history||[]).flatMap(h=>h.attachments||[]).find(a=>a.id===b.dataset.fileId);if(file?.data){const a=document.createElement('a');a.href=file.data;a.download=file.name;a.click();}else toast('File unavailable','Only metadata is stored for large files.','warning');});}
@@ -2169,7 +2022,7 @@
     const historyEvents=[approvedEvent];
     if(previousStage<STAGES.length-1)historyEvents.push(historyEvent(draft,'Stage Started','In Progress','Next production stage started.'));
     const p=projectById(current.projectId);
-    const notifications=(p?.executiveIds||[]).map(id=>workflowNotificationRecord(id,'Stage approved',`${current.itemName} has been approved and moved to ${STAGES[nextStage]}.`,'Approval',current.id));
+    const notifications=current.assignedExecutiveId?[workflowNotificationRecord(current.assignedExecutiveId,'Stage approved',`${current.itemName} has been approved and moved to ${STAGES[nextStage]}.`,'Approval',current.id)]:[];
     const control=document.getElementById('approve-stage');
     const saved=await persistItemWorkflowChange({
       itemId:current.id,
@@ -2189,7 +2042,7 @@
       const reason=String(new FormData(f).get('reason'));
       const draft=cloneJson(current);draft.approvalStatus='';draft.status='In Progress';
       const p=projectById(current.projectId);
-      const notifications=(p?.executiveIds||[]).map(id=>workflowNotificationRecord(id,'Stage rejected',`${current.itemName}: ${reason}`,'Approval',current.id));
+      const notifications=current.assignedExecutiveId?[workflowNotificationRecord(current.assignedExecutiveId,'Stage rejected',`${current.itemName}: ${reason}`,'Approval',current.id)]:[];
       setFormBusy(f,true);
       try {
         const saved=await persistItemWorkflowChange({
@@ -2207,30 +2060,20 @@
 
   function renderShortages() {
     setPageTitle('Shortages & Issues','Material constraints and production blockers');
-    const projects=assignedProjects(),shortages=visibleShortages();
+    const projects=assignedProjects(),allowedItems=new Set(visibleItems().map(item=>item.id));
+    const shortages=state.shortages.filter(shortage=>getCurrentUser()?.role==='EXECUTIVE'?allowedItems.has(shortage.itemId):projects.some(project=>project.id===shortage.projectId));
     const page=document.getElementById('page-content');
     page.innerHTML=`${pageToolbar('Shortages & Issues','Report and resolve material shortages affecting production.','<button class="btn btn-primary" id="add-shortage">+ Report Shortage</button>')}
       <div class="grid grid-4">${kpi('⚠','Open Shortages',shortages.filter(s=>s.status==='Open').length,'Requires material action')}${kpi('!','Critical',shortages.filter(s=>s.severity==='Critical'&&s.status!=='Resolved').length,'Immediate escalation')}${kpi('✓','Resolved',shortages.filter(s=>s.status==='Resolved').length,'Closed records')}${kpi('∑','Shortage Qty',fmtNumber(shortages.filter(s=>s.status!=='Resolved').reduce((a,s)=>a+number(s.shortageQty),0)),'Across visible projects')}</div>
-      <div class="filter-bar" style="margin-top:18px"><div class="filter-item"><select id="shortage-section-filter"><option value="">All sections</option>${SECTIONS.map(section=>`<option>${section}</option>`).join('')}</select></div></div><section class="card table-card" style="margin-top:18px"><div class="table-wrap"><table><thead><tr><th>Material</th><th>Project / Item</th><th>Section</th><th>Required</th><th>Available</th><th>Shortage</th><th>Severity</th><th>Status</th><th>Action</th></tr></thead><tbody>${shortages.length?shortages.map(s=>`<tr><td><strong>${esc(s.material)}</strong><div class="small muted">${esc(s.remarks||'')}</div></td><td>${esc(projectById(s.projectId)?.name||'—')}<div class="small muted">${esc(itemById(s.itemId)?.itemName||'General project shortage')}</div></td><td>${esc(itemSection(itemById(s.itemId)))}</td><td>${fmtNumber(s.requiredQty)} ${esc(s.uom||'')}</td><td>${fmtNumber(s.availableQty)} ${esc(s.uom||'')}</td><td><strong class="text-danger">${fmtNumber(s.shortageQty)}</strong></td><td>${statusChip(s.severity)}</td><td>${statusChip(s.status)}</td><td><div class="table-actions">${s.status!=='Resolved'&&can('ADMIN','MANAGER')?`<button class="btn btn-success btn-sm" data-resolve-shortage="${s.id}">Resolve</button>`:''}${can('ADMIN')?`<button class="btn btn-danger btn-sm" data-delete-shortage="${s.id}">Delete</button>`:''}${s.status==='Resolved'&&!can('ADMIN')?'—':''}</div></td></tr>`).join(''):`<tr><td colspan="9">${emptyState('⚠','No shortages reported','Production teams can report material constraints here.')}</td></tr>`}</tbody></table></div></section>`;
+      <div class="filter-bar" style="margin-top:18px"><div class="filter-item search-wide"><input id="shortage-search" placeholder="Search material, project, item or section"></div><div class="filter-item"><select id="shortage-section"><option value="">All sections</option>${SECTIONS.map(section=>`<option>${esc(section)}</option>`).join('')}<option value="Not Specified">Not Specified</option></select></div></div>
+      <section class="card table-card"><div class="table-wrap"><table><thead><tr><th>Material</th><th>Project / Item</th><th>Section</th><th>Required</th><th>Available</th><th>Shortage</th><th>Severity</th><th>Status</th><th>Action</th></tr></thead><tbody id="shortages-body"></tbody></table></div></section>`;
+    const draw=()=>{const q=document.getElementById('shortage-search').value.toLowerCase(),section=document.getElementById('shortage-section').value;const rows=shortages.filter(shortage=>{const item=itemById(shortage.itemId);return(!q||[shortage.material,shortage.remarks,projectById(shortage.projectId)?.name,item?.itemName,item?.section].some(value=>String(value||'').toLowerCase().includes(q)))&&(!section||(section==='Not Specified'?!canonicalSection(item?.section):canonicalSection(item?.section)===section));});document.getElementById('shortages-body').innerHTML=rows.length?rows.map(s=>{const item=itemById(s.itemId);return`<tr><td><strong>${esc(s.material)}</strong><div class="small muted">${esc(s.remarks||'')}</div></td><td>${esc(projectById(s.projectId)?.name||'—')}<div class="small muted">${esc(item?.itemName||'General project shortage')}</div></td><td>${esc(itemSection(item))}</td><td>${fmtNumber(s.requiredQty)} ${esc(s.uom||'')}</td><td>${fmtNumber(s.availableQty)} ${esc(s.uom||'')}</td><td><strong class="text-danger">${fmtNumber(s.shortageQty)}</strong></td><td>${statusChip(s.severity)}</td><td>${statusChip(s.status)}</td><td><div class="table-actions">${s.status!=='Resolved'&&can('ADMIN','MANAGER')?`<button class="btn btn-success btn-sm" data-resolve-shortage="${s.id}">Resolve</button>`:''}${can('ADMIN')?`<button class="btn btn-danger btn-sm" data-delete-shortage="${s.id}">Delete</button>`:''}${s.status==='Resolved'&&!can('ADMIN')?'—':''}</div></td></tr>`}).join(''):`<tr><td colspan="9">${emptyState('⚠','No shortages reported','Production teams can report material constraints here.')}</td></tr>`;bindShortageActions();};
+    const bindShortageActions=()=>{
+      document.querySelectorAll('[data-resolve-shortage]').forEach(button=>button.onclick=async()=>{const shortage=state.shortages.find(row=>row.id===button.dataset.resolveShortage);if(!shortage)return;await withOperationalMutationLock(`shortage-resolve:${shortage.id}`,button,async()=>{shortage.status='Resolved';shortage.resolvedAt=nowISO();audit('RESOLVE','Shortages',`Resolved shortage for ${shortage.material}`,shortage.id);try{await saveState();renderShortages();toast('Shortage resolved');}catch(error){renderShortages();toast('Shortage update failed',error.message,'error');}});});
+      document.querySelectorAll('[data-delete-shortage]').forEach(button=>button.onclick=async()=>{if(!requireRole('ADMIN'))return;const shortage=state.shortages.find(row=>row.id===button.dataset.deleteShortage);if(!shortage||!confirm(`Delete shortage record for ${shortage.material}?`))return;await withOperationalMutationLock(`shortage-delete:${shortage.id}`,button,async()=>{state.shortages=state.shortages.filter(row=>row.id!==shortage.id);audit('DELETE','Shortages',`Deleted shortage for ${shortage.material}`,shortage.id);try{await saveState();renderShortages();toast('Shortage deleted');}catch(error){renderShortages();toast('Shortage delete failed',error.message,'error');}});});
+    };
+    draw();document.getElementById('shortage-search').oninput=draw;document.getElementById('shortage-section').onchange=draw;
     document.getElementById('add-shortage').onclick=()=>openShortageForm();
-    const shortageSectionFilter=document.getElementById('shortage-section-filter');if(shortageSectionFilter)shortageSectionFilter.onchange=()=>{const selected=shortageSectionFilter.value;document.querySelectorAll('tbody tr').forEach(row=>{const itemText=row.children?.[2]?.textContent?.trim()||'';row.hidden=Boolean(selected&&itemText!==selected);});};
-    document.querySelectorAll('[data-resolve-shortage]').forEach(b=>b.onclick=async()=>{
-      const shortage=state.shortages.find(x=>x.id===b.dataset.resolveShortage);if(!shortage)return;
-      await withOperationalMutationLock(`shortage-resolve:${shortage.id}`,b,async()=>{
-        shortage.status='Resolved';shortage.resolvedAt=nowISO();audit('RESOLVE','Shortages',`Resolved shortage for ${shortage.material}`,shortage.id);
-        try{await saveState();renderShortages();toast('Shortage resolved');}
-        catch(error){renderShortages();toast('Shortage update failed',error.message,'error');}
-      });
-    });
-    document.querySelectorAll('[data-delete-shortage]').forEach(b=>b.onclick=async()=>{
-      if(!requireRole('ADMIN'))return;const shortage=state.shortages.find(row=>row.id===b.dataset.deleteShortage);
-      if(!shortage||!confirm(`Delete shortage record for ${shortage.material}?`))return;
-      await withOperationalMutationLock(`shortage-delete:${shortage.id}`,b,async()=>{
-        state.shortages=state.shortages.filter(row=>row.id!==shortage.id);audit('DELETE','Shortages',`Deleted shortage for ${shortage.material}`,shortage.id);
-        try{await saveState();renderShortages();toast('Shortage deleted');}
-        catch(error){renderShortages();toast('Shortage delete failed',error.message,'error');}
-      });
-    });
   }
   function openShortageForm(){if(!requireRole('ADMIN','MANAGER','EXECUTIVE'))return;const projects=assignedProjects();if(!projects.length)return toast('No project available','Create or assign a project first.','warning');openModal('Report Material Shortage',`<form id="shortage-form"><div class="form-grid"><div class="form-group"><label>Project *</label><select name="projectId" id="shortage-project" required>${projects.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></div><div class="form-group"><label>Production item</label><select name="itemId" id="shortage-item"></select></div><div class="form-group"><label>Material *</label><input name="material" required></div><div class="form-group"><label>UOM</label><input name="uom" value="Nos."></div><div class="form-group"><label>Required quantity</label><input name="requiredQty" type="number" min="0" step="any" value="0"></div><div class="form-group"><label>Available quantity</label><input name="availableQty" type="number" min="0" step="any" value="0"></div><div class="form-group"><label>Severity</label><select name="severity"><option>Low</option><option>Medium</option><option>High</option><option>Critical</option></select></div></div><div class="form-group"><label>Remarks</label><textarea name="remarks"></textarea></div></form>`,`<button class="btn btn-secondary" data-close-modal>Cancel</button><button class="btn btn-primary" id="save-shortage">Report Shortage</button>`);const fill=()=>{const pid=document.getElementById('shortage-project').value;document.getElementById('shortage-item').innerHTML='<option value="">Project level</option>'+visibleItems().filter(i=>i.projectId===pid).map(i=>`<option value="${i.id}">${esc(i.itemName)}</option>`).join('');};fill();document.getElementById('shortage-project').onchange=fill;document.getElementById('save-shortage').onclick=async event=>{const f=document.getElementById('shortage-form');if(!f.reportValidity())return;const fd=new FormData(f),req=number(fd.get('requiredQty')),avail=number(fd.get('availableQty'));const shortage={id:uid('SHR'),projectId:String(fd.get('projectId')),itemId:String(fd.get('itemId')||''),material:String(fd.get('material')).trim(),requiredQty:req,availableQty:avail,shortageQty:Math.max(0,req-avail),uom:String(fd.get('uom')||''),severity:String(fd.get('severity')),status:'Open',remarks:String(fd.get('remarks')||''),reportedBy:getCurrentUser().id,createdAt:nowISO()};await withOperationalMutationLock(`shortage-create:${shortage.id}`,event.currentTarget,async()=>{setFormBusy(f,true);try{state.shortages.push(shortage);const project=projectById(shortage.projectId);if(project?.managerId)notify(project.managerId,'Material shortage reported',`${shortage.material}: shortage of ${shortage.shortageQty} ${shortage.uom}`,'Delay',shortage.itemId||shortage.id);audit('CREATE','Shortages',`Reported shortage for ${shortage.material}`,shortage.id);await saveState();closeModal();renderShortages();toast('Shortage reported');}catch(error){toast('Shortage report failed',error.message,'error');}finally{setFormBusy(f,false);}});};}
 
@@ -2253,7 +2096,7 @@
     page.innerHTML=`${pageToolbar('Excel Bulk Upload','Validate the official template and save every valid record to the shared Supabase database.',`<a class="btn btn-secondary" href="ERP_Bulk_Upload_Template.xlsx" download>⇩ Download Excel Template</a>${can('ADMIN')?'<button class="btn btn-danger" id="delete-uploaded-data">Delete Uploaded Data</button>':''}`)}
       <div class="info-banner"><div>☁</div><div><strong>Shared database import</strong><p>The Excel workbook is read and validated in your browser. Valid records are then saved securely to Supabase and become available to all authorised users and devices.</p></div></div>
       <div class="import-steps"><div class="import-step active">1. Select File</div><div class="import-step">2. Read Data</div><div class="import-step">3. Validate</div><div class="import-step">4. Save to Database</div></div>
-      <section class="card"><div class="card-body"><div class="import-drop" id="import-drop"><div class="drop-icon">⇧</div><h3>Drop the official ERP Excel template here</h3><p>Accepted formats: XLSX or XLS • Required sheet: MASTER SHEET</p><button class="btn btn-primary" id="choose-import-file">Choose Excel File</button></div><div id="import-results" style="margin-top:18px"></div></div></section>`;
+      <section class="card"><div class="card-body"><div class="import-drop" id="import-drop"><div class="drop-icon">⇧</div><h3>Drop the official ERP Excel template here</h3><p>Accepted formats: XLSX or XLS • Required sheet: MASTER SHEET • Section values: Aluminium, Store, Fabrication, Outsource</p><button class="btn btn-primary" id="choose-import-file">Choose Excel File</button></div><div id="import-results" style="margin-top:18px"></div></div></section>`;
     if(document.getElementById('delete-uploaded-data'))document.getElementById('delete-uploaded-data').onclick=deleteUploadedData;
     const input=ensureImportInput();
     input.value='';
@@ -2314,11 +2157,10 @@
   }
 
   function cleanKey(k){return String(k??'').replace(/^\uFEFF/,'').trim().toUpperCase().replace(/[\r\n]+/g,' ').replace(/\s+/g,' ');}
-  function validateTemplateHeaders(headers){const available=new Set(headers.map(cleanKey).filter(Boolean));return TEMPLATE_HEADERS.filter(h=>!available.has(cleanKey(h)));}
+  function validateTemplateHeaders(headers){const available=new Set(headers.map(cleanKey).filter(Boolean));return REQUIRED_TEMPLATE_HEADERS.filter(h=>!available.has(cleanKey(h)));}
   function findDuplicateHeaders(headers){const seen=new Set(),duplicates=new Set();headers.map(cleanKey).filter(Boolean).forEach(h=>{if(seen.has(h))duplicates.add(h);seen.add(h);});return[...duplicates];}
   function getCol(row,...names){const map={};Object.entries(row||{}).forEach(([k,v])=>map[cleanKey(k)]=v);for(const n of names){if(map[cleanKey(n)]!==undefined)return map[cleanKey(n)];}return '';}
-  function canonicalSectionValue(value){return canonicalSection(value);}
-  function canonicalStage(value){const s=String(value||'').trim().toUpperCase().replace(/\s*-\s*/g,' - ').replace(/\s+/g,' ');const compact=s.replace(/[\s-]/g,'');const found=STAGES.find(x=>x.replace(/[\s-]/g,'')===compact);if(found)return found;const legacy=LEGACY_STAGES.find(x=>x.replace(/[\s-]/g,'')===compact);return legacy?(LEGACY_STAGE_FALLBACKS[legacy]||legacy):'';}
+  function canonicalStage(value){const s=String(value||'').trim().toUpperCase().replace(/\s*-\s*/g,' - ').replace(/\s+/g,' ');const compact=s.replace(/[\s-]/g,'');const found=STAGES.find(x=>x.replace(/[\s-]/g,'')===compact);return found||'';}
   function blankOptionalExcelValue(value){const text=String(value??'').trim();return value==null||text===''||/^0(?:\.0+)?$/.test(text);}
   function excelDate(value){
     if(blankOptionalExcelValue(value))return'';
@@ -2351,8 +2193,8 @@
     rows.forEach((r,index)=>{
       const itemName=String(getCol(r,'ITEM NAME')).trim();
       const projectName=String(getCol(r,'PROJECT NAME')).trim();
-      const sectionRaw=getCol(r,'SECTION');
-      const section=canonicalSectionValue(sectionRaw);
+      const sectionRaw=String(getCol(r,'SECTION')).trim();
+      const section=canonicalSection(sectionRaw);
       const statusRaw=getCol(r,'STATUS');
       const stage=canonicalStage(statusRaw);
       const qtyCell=getCol(r,'QTY');
@@ -2372,7 +2214,7 @@
       dateFields.forEach(([header,key])=>{const raw=getCol(r,header);dates[key]=excelDate(raw);if(!blankOptionalExcelValue(raw)&&!dates[key])dateErrors.push(`${header} has an invalid date`);});
       const rawSize=getCol(r,'SIZE');
       const rec={
-        sourceRow:index+2,projectName,itemName,section,sectionRaw:String(sectionRaw||'').trim(),site:String(getCol(r,'SITE DETAILS')).trim(),
+        sourceRow:index+2,projectName,itemName,section,sectionRaw,site:String(getCol(r,'SITE DETAILS')).trim(),
         size:blankOptionalExcelValue(rawSize)?extractSize(itemName):String(rawSize).trim(),
         bomPath:String(getCol(r,'BOM')).trim(),quantity:qty,quantitySource,quantityVerified,
         bomNumber:String(getCol(r,'BOM NUMBER')).trim(),jobNumber:String(getCol(r,'JOB NO')).trim(),
@@ -2381,16 +2223,17 @@
       };
       if(!projectName)rec.errors.push('PROJECT NAME is required');
       if(!itemName)rec.errors.push('ITEM NAME is required');
-      if(!section)rec.errors.push(`SECTION is invalid: ${rec.sectionRaw||'blank'}. Allowed values: ${SECTIONS.join(', ')}`);
+      if(sectionRaw&&!section)rec.errors.push(`SECTION is invalid: ${sectionRaw}. Allowed values: ${SECTIONS.join(', ')}`);
+      if(!sectionRaw)rec.warnings.push('SECTION is blank; the record will remain Not Specified for backward compatibility');
       if(!stage)rec.errors.push(`STATUS is invalid: ${rec.statusRaw||'blank'}`);
       if(qtyInfo.kind==='invalid')rec.errors.push('QTY must contain only a number greater than zero');
       if(!qty)rec.errors.push('QTY is required. Enter a number greater than zero or include a quantity such as 10 NOS in ITEM NAME');
       rec.errors.push(...dateErrors);
 
-      const key=importDuplicateKey(projectName,itemName,rec.section,rec.site,rec.bomNumber,rec.jobNumber,stage,qty);
+      const key=importDuplicateKey(projectName,itemName,section,rec.site,rec.bomNumber,rec.jobNumber,stage,qty);
       if(seen.has(key))rec.errors.push('Exact duplicate row exists in this file');
       seen.add(key);
-      const existing=state.items.some(i=>importDuplicateKey(projectById(i.projectId)?.name,i.itemName,itemSection(i),i.site,i.bomNumber,i.jobNumber,STAGES[i.currentStage],i.quantity)===key);
+      const existing=state.items.some(i=>importDuplicateKey(projectById(i.projectId)?.name,i.itemName,canonicalSection(i.section),i.site,i.bomNumber,i.jobNumber,STAGES[i.currentStage],i.quantity)===key);
       if(existing)rec.errors.push('Exact duplicate record already exists in the ERP database');
       if(rec.errors.length)failed.push(rec);else{valid.push(rec);if(rec.warnings.length)warnings.push(rec);}
     });
@@ -2402,8 +2245,8 @@
     document.querySelectorAll('.import-step').forEach((x,i)=>{x.classList.toggle('done',i<2);x.classList.toggle('active',i===2);});
     result.innerHTML=`<div class="validation-summary"><div class="validation-box"><strong>${r.total}</strong><span>Total Rows</span></div><div class="validation-box"><strong class="text-success">${r.valid.length}</strong><span>Valid Rows</span></div><div class="validation-box"><strong class="text-warning">${r.warnings.length}</strong><span>Warnings</span></div><div class="validation-box"><strong class="text-danger">${r.failed.length}</strong><span>Failed Rows</span></div><div class="validation-box"><strong>${new Set(r.valid.map(x=>x.projectName)).size}</strong><span>Projects</span></div></div>
       ${r.failed.length?`<div class="info-banner danger"><div>!</div><div><strong>${r.failed.length} row(s) will not be imported</strong><p>Correct the errors shown below or continue to import only the valid rows.</p></div></div>`:''}
-      ${r.warnings.length?`<div class="info-banner warning"><div>⚠</div><div><strong>${r.warnings.length} quantity warning(s)</strong><p>Where QTY was blank or zero, the ERP extracted a quantity such as “10 NOS” from ITEM NAME. Review these rows before importing.</p></div></div>`:''}
-      <div class="table-wrap"><table><thead><tr><th>Row</th><th>Project</th><th>Item</th><th>Section</th><th>Qty</th><th>BOM / Job</th><th>Stage</th><th>Validation</th></tr></thead><tbody>${[...r.valid.slice(0,80),...r.failed.slice(0,40)].map(x=>`<tr><td>${x.sourceRow}</td><td>${esc(x.projectName||'—')}</td><td>${esc(x.itemName||'—')}<div class="small muted">${esc(x.site)}</div></td><td>${esc(x.section||'—')}</td><td>${fmtNumber(x.quantity)}<div class="small muted">${esc(x.quantitySource)}</div></td><td>${esc(x.bomNumber||'—')}<div class="small muted">${esc(x.jobNumber||'—')}</div></td><td>${esc(x.stage||x.statusRaw||'—')}</td><td>${x.errors.length?`<span class="text-danger small">${esc(x.errors.join('; '))}</span>`:x.warnings.length?`<span class="text-warning small">${esc(x.warnings.join('; '))}</span>`:'<span class="text-success small">Valid</span>'}</td></tr>`).join('')}</tbody></table></div>
+      ${r.warnings.length?`<div class="info-banner warning"><div>⚠</div><div><strong>${r.warnings.length} validation warning(s)</strong><p>Warnings may indicate a quantity extracted from ITEM NAME or a blank legacy SECTION. Review these rows before importing.</p></div></div>`:''}
+      <div class="table-wrap"><table><thead><tr><th>Row</th><th>Project</th><th>Item</th><th>Section</th><th>Qty</th><th>BOM / Job</th><th>Stage</th><th>Validation</th></tr></thead><tbody>${[...r.valid.slice(0,80),...r.failed.slice(0,40)].map(x=>`<tr><td>${x.sourceRow}</td><td>${esc(x.projectName||'—')}</td><td>${esc(x.itemName||'—')}<div class="small muted">${esc(x.site)}</div></td><td>${esc(x.section||'Not Specified')}</td><td>${fmtNumber(x.quantity)}<div class="small muted">${esc(x.quantitySource)}</div></td><td>${esc(x.bomNumber||'—')}<div class="small muted">${esc(x.jobNumber||'—')}</div></td><td>${esc(x.stage||x.statusRaw||'—')}</td><td>${x.errors.length?`<span class="text-danger small">${esc(x.errors.join('; '))}</span>`:x.warnings.length?`<span class="text-warning small">${esc(x.warnings.join('; '))}</span>`:'<span class="text-success small">Valid</span>'}</td></tr>`).join('')}</tbody></table></div>
       <div class="modal-footer" style="position:static;padding:16px 0 0"><button class="btn btn-secondary" id="download-error-report">Download Validation CSV</button><button class="btn btn-primary" id="confirm-import" ${r.valid.length?'':'disabled'}>Save ${r.valid.length} Valid Rows to Database</button></div>`;
     document.getElementById('confirm-import').onclick=confirmImport;
     document.getElementById('download-error-report').onclick=downloadErrorReport;
@@ -2422,7 +2265,7 @@
         p={id:uid('PRJ'),code:`PRJ-${String(workingProjects.length+1).padStart(4,'0')}`,name:r.projectName,client:'',site:r.site,jobNumber:r.jobNumber,status:'Active',startDate:r.bomIssueDate||todayISO(),targetDate:r.targetDate||'',managerId:user.role==='MANAGER'?user.id:'',executiveIds:[],priority:'Medium',createdAt:nowISO()};
         workingProjects.push(p);newProjects.push(p);
       }
-      const idx=STAGES.indexOf(r.stage),item={id:uid('ITM'),projectId:p.id,itemName:r.itemName,rawItemName:r.itemName,section:r.section,assignedExecutiveId:'',assignedBy:'',assignedAt:'',site:r.site,size:r.size,quantity:r.quantity,quantitySource:r.quantitySource,quantityVerified:r.quantityVerified,bomPath:r.bomPath,bomNumber:r.bomNumber,jobNumber:r.jobNumber,bomIssueDate:r.bomIssueDate,drawingIssueDate:r.drawingIssueDate,indentNumber:r.indentNumber,indentIssueDate:r.indentIssueDate,targetDate:r.targetDate,currentStage:idx,currentStageName:r.stage,status:r.shortages?'Delayed':'In Progress',approvalStatus:'',shortages:r.shortages,remarks:'',createdAt:nowISO(),updatedAt:nowISO(),history:[{id:uid('HIS'),stageIndex:idx,stageName:r.stage,action:'Excel Initial Import',status:'Imported',updatedBy:user.id,updatedByName:user.name,date:nowISO(),remarks:`Imported from ${importBuffer.fileName}, source row ${r.sourceRow}. Previous stage history was not available in the workbook.`,attachments:[]}]};
+      const idx=STAGES.indexOf(r.stage),item={id:uid('ITM'),projectId:p.id,itemName:r.itemName,rawItemName:r.itemName,section:r.section,site:r.site,size:r.size,quantity:r.quantity,quantitySource:r.quantitySource,quantityVerified:r.quantityVerified,bomPath:r.bomPath,bomNumber:r.bomNumber,jobNumber:r.jobNumber,bomIssueDate:r.bomIssueDate,drawingIssueDate:r.drawingIssueDate,indentNumber:r.indentNumber,indentIssueDate:r.indentIssueDate,targetDate:r.targetDate,assignedExecutiveId:'',assignedExecutiveName:'',assignedById:'',assignedByName:'',assignedAt:'',dueDate:r.targetDate||'',priority:p.priority||'Medium',currentStage:idx,currentStageName:r.stage,status:r.shortages?'Delayed':'In Progress',approvalStatus:'',shortages:r.shortages,remarks:'',createdAt:nowISO(),updatedAt:nowISO(),history:[{id:uid('HIS'),stageIndex:idx,stageName:r.stage,action:'Excel Initial Import',status:'Imported',updatedBy:user.id,updatedByName:user.name,date:nowISO(),remarks:`Imported from ${importBuffer.fileName}, source row ${r.sourceRow}. Previous stage history was not available in the workbook.`,attachments:[]}]};
       items.push(item);
       let shortage=null;
       if(r.shortages){shortage={id:uid('SHR'),projectId:p.id,itemId:item.id,material:'Imported shortage',requiredQty:0,availableQty:0,shortageQty:0,uom:'',severity:'High',status:'Open',remarks:r.shortages,reportedBy:user.id,createdAt:nowISO()};shortages.push(shortage);}
@@ -2494,8 +2337,7 @@
     result.innerHTML=`<div class="import-completion"><div class="validation-summary"><div class="validation-box"><strong class="text-success">${imported}</strong><span>Imported</span></div><div class="validation-box"><strong>${newProjects}</strong><span>New Projects</span></div><div class="validation-box"><strong class="text-danger">${allFailed.length}</strong><span>Failed Rows</span></div><div class="validation-box"><strong>${importBuffer.total}</strong><span>Total Rows</span></div></div>
       <div class="info-banner ${imported?'':'danger'}"><div>${imported?'✓':'!'}</div><div><strong>${imported?'Database import completed':'No rows were imported'}</strong><p>${imported} valid production record(s) are now stored in Supabase and visible to authorised users. ${allFailed.length?`${allFailed.length} row(s) were not imported; review the reasons below.`:'No rows failed.'}</p></div></div>
       ${allFailed.length?`<div class="table-wrap"><table><thead><tr><th>Row</th><th>Project</th><th>Item</th><th>Failure Reason</th></tr></thead><tbody>${allFailed.slice(0,200).map(r=>`<tr><td>${r.sourceRow||'—'}</td><td>${esc(r.projectName||'—')}</td><td>${esc(r.itemName||'—')}</td><td><span class="text-danger small">${esc((r.errors||[]).join('; ')||'Import failed')}</span></td></tr>`).join('')}</tbody></table></div>`:''}
-      <div class="modal-footer" style="position:static;padding:16px 0 0">${allFailed.length?'<button class="btn btn-secondary" id="download-error-report">Download Failure CSV</button>':''}${imported&&can('ADMIN','MANAGER')?'<button class="btn btn-secondary" id="assign-after-import">Assign Section Work</button>':''}<button class="btn btn-primary" id="open-production-after-import">Open Production Tracker</button></div></div>`;
-    if(document.getElementById('assign-after-import'))document.getElementById('assign-after-import').onclick=()=>openSectionAssignmentModal();
+      <div class="modal-footer" style="position:static;padding:16px 0 0">${allFailed.length?'<button class="btn btn-secondary" id="download-error-report">Download Failure CSV</button>':''}<button class="btn btn-primary" id="open-production-after-import">Open Production Tracker</button></div></div>`;
     document.getElementById('open-production-after-import').onclick=()=>{currentRoute='production';renderAppShell();};
     if(document.getElementById('download-error-report'))document.getElementById('download-error-report').onclick=downloadErrorReport;
   }
@@ -2512,43 +2354,29 @@
       catch(error){renderImport();toast('Delete failed',error.message,'error');}
     });
   }
-  function downloadErrorReport(){const rows=[...(importBuffer?.failed||[]),...(importBuffer?.warnings||[]),...(importBuffer?.databaseFailures||[])];const csv=['Source Row,Project,Item,Section,Stage,Errors,Warnings',...rows.map(r=>[r.sourceRow,r.projectName,r.itemName,r.sectionRaw||r.section,r.statusRaw,r.errors?.join('; ')||'',r.warnings?.join('; ')||''].map(csvCell).join(','))].join('\n');downloadBlob('\uFEFF'+csv,'procurement-erp-import-results.csv','text/csv;charset=utf-8');}
+  function downloadErrorReport(){const rows=[...(importBuffer?.failed||[]),...(importBuffer?.warnings||[]),...(importBuffer?.databaseFailures||[])];const csv=['Source Row,Project,Item,Section,Stage,Errors,Warnings',...rows.map(r=>[r.sourceRow,r.projectName,r.itemName,r.section||r.sectionRaw||'',r.statusRaw,r.errors?.join('; ')||'',r.warnings?.join('; ')||''].map(csvCell).join(','))].join('\n');downloadBlob('\uFEFF'+csv,'factory-erp-import-results.csv','text/csv;charset=utf-8');}
   function csvCell(v){const s=String(v??'');return /[",\n]/.test(s)?`"${s.replace(/"/g,'""')}"`:s;}
   function downloadBlob(content,name,type){const b=new Blob([content],{type}),url=URL.createObjectURL(b),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 
   function renderReports() {
     setPageTitle('Reports','Operational reporting and exports');
-    const page=document.getElementById('page-content');page.innerHTML=`${pageToolbar('Reports Centre','Generate project, stage, delay and shortage reports.','<button class="btn btn-secondary" id="print-report">Print / Save PDF</button><button class="btn btn-primary" id="export-report">⇩ Export CSV</button>')}
-      <div class="filter-bar"><div class="filter-item"><select id="report-type"><option value="production">Production Items</option><option value="projects">Project Summary</option><option value="stage">Stage Summary</option><option value="delay">Delay Report</option><option value="shortage">Shortage Report</option></select></div><div class="filter-item"><select id="report-project"><option value="">All projects</option>${assignedProjects().map(project=>`<option value="${project.id}">${esc(project.name)}</option>`).join('')}</select></div><div class="filter-item"><select id="report-section"><option value="">All sections</option>${SECTIONS.map(section=>`<option>${section}</option>`).join('')}</select></div><div class="filter-item"><input id="report-from" type="date"></div><div class="filter-item"><input id="report-to" type="date"></div><button class="btn btn-secondary" id="run-report">Run Report</button></div><section class="card table-card"><div class="card-header"><div><h3 id="report-title">Production Items Report</h3><p id="report-subtitle">Generated ${fmtDate(nowISO(),true)}</p></div></div><div class="table-wrap" id="report-table"></div></section>`;
-    const run=()=>renderReportTable();document.getElementById('run-report').onclick=run;document.getElementById('report-type').onchange=run;document.getElementById('report-section').onchange=run;run();document.getElementById('print-report').onclick=()=>window.print();document.getElementById('export-report').onclick=exportCurrentReport;
+    const page=document.getElementById('page-content');page.innerHTML=`${pageToolbar('Reports Centre','Generate project, stage, delay and shortage reports.','<button class="btn btn-secondary" id="print-report">Print / Save PDF</button><button class="btn btn-secondary" id="export-report">⇩ Export CSV</button><button class="btn btn-primary" id="export-report-excel">⇩ Export Excel</button>')}
+      <div class="filter-bar"><div class="filter-item"><select id="report-type"><option value="production">Production Items</option><option value="projects">Project Summary</option><option value="stage">Stage Summary</option><option value="delay">Delay Report</option><option value="shortage">Shortage Report</option></select></div><div class="filter-item"><select id="report-project"><option value="">All projects</option>${assignedProjects().map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></div><div class="filter-item"><select id="report-section"><option value="">All sections</option>${SECTIONS.map(section=>`<option>${esc(section)}</option>`).join('')}<option value="Not Specified">Not Specified</option></select></div><div class="filter-item"><input id="report-from" type="date"></div><div class="filter-item"><input id="report-to" type="date"></div><button class="btn btn-secondary" id="run-report">Run Report</button></div><section class="card table-card"><div class="card-header"><div><h3 id="report-title">Production Items Report</h3><p id="report-subtitle">Generated ${fmtDate(nowISO(),true)}</p></div></div><div class="table-wrap" id="report-table"></div></section>`;
+    const run=()=>renderReportTable();document.getElementById('run-report').onclick=run;document.getElementById('report-type').onchange=run;document.getElementById('report-project').onchange=run;document.getElementById('report-section').onchange=run;run();document.getElementById('print-report').onclick=()=>window.print();document.getElementById('export-report').onclick=exportCurrentReport;document.getElementById('export-report-excel').onclick=exportCurrentReportExcel;
   }
-  function getReportData(){const type=document.getElementById('report-type').value,pid=document.getElementById('report-project').value,section=document.getElementById('report-section').value,allowed=new Set(assignedProjects().map(project=>project.id));const filterItem=item=>(!pid||item.projectId===pid)&&(!section||itemSection(item)===section);if(type==='projects')return{title:'Project Summary Report',headers:['Project Code','Project Name','Sections','Client','Site','Job Number','Manager','Target Date','Completion %','Status'],rows:assignedProjects().filter(project=>(!pid||project.id===pid)&&(!section||projectSections(project.id).includes(section))).map(project=>[project.code,project.name,projectSections(project.id).join(', '),project.client,project.site,project.jobNumber,userById(project.managerId)?.name||'',project.targetDate,projectCompletion(project.id),project.status])};if(type==='stage')return{title:'Stage-wise Production Report',headers:['Section','Stage','Item Count','Total Quantity','Delayed Items'],rows:(section?[section]:SECTIONS).flatMap(sectionName=>STAGES.map((stageName,index)=>{const rows=visibleItems().filter(item=>filterItem(item)&&itemSection(item)===sectionName&&item.currentStage===index);return[sectionName,stageName,rows.length,rows.reduce((total,item)=>total+number(item.quantity),0),rows.filter(item=>item.status==='Delayed').length]}))};if(type==='delay'){const items=visibleItems().filter(item=>filterItem(item)&&(item.status==='Delayed'||projectById(item.projectId)?.status==='Delayed'));return{title:'Production Delay Report',headers:['Project','Item','Section','Assigned To','BOM','Current Stage','Quantity','Shortage / Reason','Updated'],rows:items.map(item=>[projectById(item.projectId)?.name,item.itemName,itemSection(item),assignedExecutiveName(item),item.bomNumber,STAGES[item.currentStage],item.quantity,item.shortages||item.remarks||'Delayed',item.updatedAt])};}if(type==='shortage'){const rows=visibleShortages().filter(shortage=>(!pid||shortage.projectId===pid)&&(!section||itemSection(itemById(shortage.itemId))===section));return{title:'Material Shortage Report',headers:['Project','Item','Section','Assigned To','Material','Required','Available','Shortage','UOM','Severity','Status','Remarks'],rows:rows.map(shortage=>{const item=itemById(shortage.itemId);return[projectById(shortage.projectId)?.name,item?.itemName||'',itemSection(item),assignedExecutiveName(item),shortage.material,shortage.requiredQty,shortage.availableQty,shortage.shortageQty,shortage.uom,shortage.severity,shortage.status,shortage.remarks]})};}const items=visibleItems().filter(filterItem);return{title:'Production Items Report',headers:['Project','Item','Section','Assigned To','Site','BOM Number','Job Number','Quantity','Current Stage','Task Status','Due Date','Priority','Progress %','Status','Updated'],rows:items.map(item=>[projectById(item.projectId)?.name,item.itemName,itemSection(item),assignedExecutiveName(item),item.site,item.bomNumber,item.jobNumber,item.quantity,STAGES[item.currentStage],itemTaskState(item),itemDueDate(item),itemPriority(item),completionPercent(item),item.approvalStatus==='SUBMITTED'?'Submitted':item.status,item.updatedAt])};}
+  function reportSectionMatches(item,section){return !section||(section==='Not Specified'?!canonicalSection(item?.section):canonicalSection(item?.section)===section);}
+  function getReportData(){
+    const type=document.getElementById('report-type').value,pid=document.getElementById('report-project').value,section=document.getElementById('report-section').value,allowed=new Set(assignedProjects().map(p=>p.id));
+    const reportItems=visibleItems().filter(item=>(!pid||item.projectId===pid)&&reportSectionMatches(item,section));
+    if(type==='projects')return{title:'Project Summary Report',headers:['Project Code','Project Name','Client','Site','Job Number','Sections','Manager','Target Date','Completion %','Status'],rows:assignedProjects().filter(project=>!pid||project.id===pid).filter(project=>!section||reportItems.some(item=>item.projectId===project.id)).map(project=>[project.code,project.name,project.client,project.site,project.jobNumber,[...new Set(reportItems.filter(item=>item.projectId===project.id).map(item=>itemSection(item)))].join(', '),userById(project.managerId)?.name||'',project.targetDate,projectCompletion(project.id),project.status])};
+    if(type==='stage')return{title:'Stage-wise Production Report',headers:['Section','Stage','Item Count','Total Quantity','Delayed Items'],rows:(section?[section]:[...SECTIONS,'Not Specified']).flatMap(sectionName=>STAGES.map((stageName,index)=>{const rows=reportItems.filter(item=>itemSection(item)===sectionName&&item.currentStage===index);return[sectionName,stageName,rows.length,rows.reduce((sum,item)=>sum+number(item.quantity),0),rows.filter(item=>item.status==='Delayed').length]}))};
+    if(type==='delay')return{title:'Production Delay Report',headers:['Project','Item','Section','Assigned To','BOM','Current Stage','Quantity','Due Date','Priority','Shortage / Reason','Updated'],rows:reportItems.filter(item=>item.status==='Delayed'||projectById(item.projectId)?.status==='Delayed').map(item=>[projectById(item.projectId)?.name,item.itemName,itemSection(item),assignedExecutive(item)?.name||'Unassigned',item.bomNumber,STAGES[item.currentStage],item.quantity,taskDueDate(item),taskPriority(item),item.shortages||item.remarks||'Delayed',item.updatedAt])};
+    if(type==='shortage'){const rows=state.shortages.filter(shortage=>allowed.has(shortage.projectId)&&(!pid||shortage.projectId===pid)&&reportSectionMatches(itemById(shortage.itemId),section)&&(getCurrentUser()?.role!=='EXECUTIVE'||visibleItems().some(item=>item.id===shortage.itemId)));return{title:'Material Shortage Report',headers:['Project','Item','Section','Material','Required','Available','Shortage','UOM','Severity','Status','Remarks'],rows:rows.map(shortage=>[projectById(shortage.projectId)?.name,itemById(shortage.itemId)?.itemName||'',itemSection(itemById(shortage.itemId)),shortage.material,shortage.requiredQty,shortage.availableQty,shortage.shortageQty,shortage.uom,shortage.severity,shortage.status,shortage.remarks])};}
+    return{title:'Production Items Report',headers:['Project','Item','Section','Site','BOM Number','Job Number','Quantity','Assigned To','Assigned By','Due Date','Priority','Current Stage','Progress %','Status','Updated'],rows:reportItems.map(item=>[projectById(item.projectId)?.name,item.itemName,itemSection(item),item.site,item.bomNumber,item.jobNumber,item.quantity,assignedExecutive(item)?.name||'Unassigned',assignedByName(item),taskDueDate(item),taskPriority(item),STAGES[item.currentStage],completionPercent(item),taskStatus(item),item.updatedAt])};
+  }
   function renderReportTable(){const d=getReportData();document.getElementById('report-title').textContent=d.title;document.getElementById('report-table').innerHTML=d.rows.length?`<table><thead><tr>${d.headers.map(h=>`<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${d.rows.map(r=>`<tr>${r.map(v=>`<td>${esc(v??'')}</td>`).join('')}</tr>`).join('')}</tbody></table>`:emptyState('▤','No report data','Adjust filters or import records first.');}
-  async function exportCurrentReport(){const d=getReportData(),csv=[d.headers.map(csvCell).join(','),...d.rows.map(r=>r.map(csvCell).join(','))].join('\n');const appSlug=BRAND.erpName.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');const reportSlug=d.title.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');downloadBlob('\uFEFF'+csv,`${appSlug}-${reportSlug}.csv`,'text/csv;charset=utf-8');audit('EXPORT','Reports',`Exported ${d.title}`);try{await saveState();toast('Report exported');}catch(error){toast('Report exported','The file was downloaded, but its audit entry could not be saved.','warning');}}
-
-  function sectionExecutiveOptions(project, selectedId = '') {
-    const current=getCurrentUser();
-    const executives=current?.role==='MANAGER'?manageableExecutives(current.id):state.users.filter(user=>user.role==='EXECUTIVE'&&user.status==='Active');
-    return `<option value="">Unassigned</option>${executives.map(user=>`<option value="${user.id}" ${user.id===selectedId?'selected':''}>${esc(user.name)} (${esc(user.email)})</option>`).join('')}`;
-  }
-
-  function currentSectionAssignee(projectId, section) {
-    const counts=new Map();
-    state.items.filter(item=>item.projectId===projectId&&itemSection(item)===section&&item.assignedExecutiveId).forEach(item=>counts.set(item.assignedExecutiveId,(counts.get(item.assignedExecutiveId)||0)+1));
-    return [...counts.entries()].sort((a,b)=>b[1]-a[1])[0]?.[0]||'';
-  }
-
-  function openSectionAssignmentModal(initialProjectId = '') {
-    if(!requireRole('ADMIN','MANAGER'))return;
-    const current=getCurrentUser();
-    const projects=assignedProjects().filter(project=>current.role==='ADMIN'||project.managerId===current.id);
-    if(!projects.length)return toast('No manageable project','Assign a Manager to a project before section-based work assignment.','warning');
-    const selectedProjectId=projects.some(project=>project.id===initialProjectId)?initialProjectId:projects[0].id;
-    const renderRows=projectId=>{const project=projectById(projectId);return SECTIONS.map(section=>`<tr><td><strong>${section}</strong></td><td>${state.items.filter(item=>item.projectId===projectId&&itemSection(item)===section).length}</td><td><select data-section-assignee="${section}">${sectionExecutiveOptions(project,currentSectionAssignee(projectId,section))}</select></td></tr>`).join('');};
-    openModal('Assign Section Work',`<form id="section-assignment-form"><div class="form-group"><label>Project *</label><select id="section-assignment-project" required>${projects.map(project=>`<option value="${project.id}" ${project.id===selectedProjectId?'selected':''}>${esc(project.name)}</option>`).join('')}</select></div><div class="info-banner"><div>↦</div><div><strong>Assign imported work without editing item data</strong><p>Every item in the selected project and section will be assigned to the selected Executive.</p></div></div><div class="table-wrap"><table><thead><tr><th>Section</th><th>Items</th><th>Executive</th></tr></thead><tbody id="section-assignment-body">${renderRows(selectedProjectId)}</tbody></table></div></form>`,`<button class="btn btn-secondary" data-close-modal>Cancel</button><button class="btn btn-primary" id="save-section-assignments">Save Assignments</button>`,'modal-lg');
-    document.getElementById('section-assignment-project').onchange=event=>{document.getElementById('section-assignment-body').innerHTML=renderRows(event.target.value);};
-    document.getElementById('save-section-assignments').onclick=async event=>{const form=document.getElementById('section-assignment-form');if(!form.reportValidity())return;const projectId=document.getElementById('section-assignment-project').value;const assignments=[...document.querySelectorAll('[data-section-assignee]')].map(select=>({section:select.dataset.sectionAssignee,executiveId:select.value}));await withOperationalMutationLock(`section-assignment:${projectId}`,event.currentTarget,async()=>{setFormBusy(form,true);try{const result=await callProjectLineItemsApi('assign-sections',{projectId,assignments});for(const record of result.productionRecords||[])applyConfirmedItemRecord(record);await loadOperationalData({renderAfter:false});closeModal();renderPage(currentRoute);toast('Section work assigned',`${result.updatedItems||0} production item(s) synchronized.`);}catch(error){toast('Assignment failed',error.message,'error');}finally{setFormBusy(form,false);}});};
-  }
+  async function exportCurrentReport(){const d=getReportData(),csv=[d.headers.map(csvCell).join(','),...d.rows.map(r=>r.map(csvCell).join(','))].join('\n');downloadBlob('\uFEFF'+csv,`${d.title.toLowerCase().replace(/[^a-z0-9]+/g,'-')}.csv`,'text/csv;charset=utf-8');audit('EXPORT','Reports',`Exported ${d.title}`);try{await saveState();toast('Report exported');}catch(error){toast('Report exported','The file was downloaded, but its audit entry could not be saved.','warning');}}
+  async function exportCurrentReportExcel(){const d=getReportData();if(typeof XLSX==='undefined')return toast('Excel export unavailable','The Excel library did not load. Use Export CSV instead.','error');const sheet=XLSX.utils.aoa_to_sheet([d.headers,...d.rows]);sheet['!cols']=d.headers.map((header,index)=>({wch:Math.min(42,Math.max(String(header).length+2,...d.rows.slice(0,200).map(row=>String(row[index]??'').length+2)))}));const workbook=XLSX.utils.book_new();XLSX.utils.book_append_sheet(workbook,sheet,'Report');XLSX.writeFile(workbook,`${d.title.toLowerCase().replace(/[^a-z0-9]+/g,'-')}.xlsx`);audit('EXPORT','Reports',`Exported ${d.title} to Excel`);try{await saveState();toast('Excel report exported');}catch(error){toast('Excel report exported','The workbook was downloaded, but its audit entry could not be saved.','warning');}}
 
   function renderUsers() {
     if (!requireRole('ADMIN','MANAGER')) return;
@@ -2569,7 +2397,7 @@
             ? `<div class="table-actions"><button class="btn btn-secondary btn-sm" data-edit-user="${u.id}">Edit</button><button class="btn btn-secondary btn-sm" data-reset-user="${u.id}">Reset Password</button><button class="btn btn-danger btn-sm" data-delete-user="${u.id}">Delete</button></div>`
             : '<span class="small muted">View only</span>';
         return `<tr><td><div class="input-row"><div class="avatar">${initials(u.name)}</div><div><strong>${esc(u.name)}</strong><div class="small muted">${esc(u.id)}</div></div></div></td><td>${esc(u.email)}</td><td><span class="role-chip">${esc(roleLabel(u.role))}</span></td><td>${state.projects.filter(p=>p.managerId===u.id||(p.executiveIds||[]).includes(u.id)).length}</td><td>${statusChip(u.status)}</td><td>${passwordState}</td><td>${fmtDate(u.createdAt)}</td><td>${actions}</td></tr>`;
-      }).join('') : `<tr><td colspan="9">${emptyState('♙','No users available','Create a Manager or Executive to begin.')}</td></tr>`}</tbody></table></div></section>`;
+      }).join('') : `<tr><td colspan="8">${emptyState('♙','No users available','Create a Manager or Executive to begin.')}</td></tr>`}</tbody></table></div></section>`;
     document.getElementById('add-user').onclick = () => openUserForm();
     document.querySelectorAll('[data-edit-user]').forEach(b => b.onclick = () => openUserForm(userById(b.dataset.editUser)));
     document.querySelectorAll('[data-reset-user]').forEach(b => b.onclick = () => openPasswordReset(userById(b.dataset.resetUser)));
@@ -2628,7 +2456,7 @@
   }
 
   function showTemporaryCredentials(fullName, email, temporaryPassword, title) {
-    const credentials = `Profile Solutions Procurement ERP login\nEmail: ${email}\nTemporary password: ${temporaryPassword}\nThe password must be changed after first login.`;
+    const credentials = `Factory ERP login\nEmail: ${email}\nTemporary password: ${temporaryPassword}\nThe password must be changed after first login.`;
     openModal(title, `<div class="info-banner"><div>✓</div><div><strong>${esc(fullName)}</strong><p>The account is active and ready for first login. Share these details privately.</p></div></div><div class="form-group"><label>Login Email</label><input value="${esc(email)}" readonly></div><div class="form-group"><label>Temporary Password</label><input value="${esc(temporaryPassword)}" readonly></div><div class="auth-note">This password is displayed here for handover. The ERP does not store it in browser data, and the user must replace it at first login.</div>`, `<button class="btn btn-secondary" data-close-modal>Close</button><button class="btn btn-primary" id="copy-temp-credentials">Copy Login Details</button>`);
     document.getElementById('copy-temp-credentials').onclick = async () => {
       try { await navigator.clipboard.writeText(credentials); toast('Copied','Login details copied to the clipboard.'); }
@@ -2675,7 +2503,7 @@
 
   function renderAudit() {
     setPageTitle('Audit Logs','Traceability of user and data changes');
-    const page=document.getElementById('page-content');page.innerHTML=`${pageToolbar('Audit Logs','Every important action performed in the ERP.','<button class="btn btn-secondary" id="export-audit">⇩ Export CSV</button>')}<div class="filter-bar"><div class="filter-item search-wide"><input id="audit-search" placeholder="Search user, action, module or details"></div><div class="filter-item"><select id="audit-module"><option value="">All modules</option>${[...new Set(state.audit.map(a=>a.module))].map(x=>`<option>${esc(x)}</option>`).join('')}</select></div></div><section class="card table-card"><div class="table-wrap"><table><thead><tr><th>Date & Time</th><th>User</th><th>Action</th><th>Module</th><th>Details</th></tr></thead><tbody id="audit-body"></tbody></table></div></section>`;const draw=()=>{const q=document.getElementById('audit-search').value.toLowerCase(),m=document.getElementById('audit-module').value;const rows=state.audit.filter(a=>(!q||[a.userName,a.action,a.module,a.details].some(v=>String(v||'').toLowerCase().includes(q)))&&(!m||a.module===m));document.getElementById('audit-body').innerHTML=rows.length?rows.slice(0,500).map(a=>`<tr><td>${fmtDate(a.createdAt,true)}</td><td>${esc(a.userName)}</td><td><span class="role-chip">${esc(a.action)}</span></td><td>${esc(a.module)}</td><td>${esc(a.details)}</td></tr>`).join(''):`<tr><td colspan="5">${emptyState('◷','No audit records','Actions performed in the ERP will be tracked here.')}</td></tr>`;};draw();document.getElementById('audit-search').oninput=draw;document.getElementById('audit-module').onchange=draw;document.getElementById('export-audit').onclick=()=>{const csv=['Date,User,Action,Module,Details',...state.audit.map(a=>[a.createdAt,a.userName,a.action,a.module,a.details].map(csvCell).join(','))].join('\n');downloadBlob(csv,'procurement-erp-audit-log.csv','text/csv');};
+    const page=document.getElementById('page-content');page.innerHTML=`${pageToolbar('Audit Logs','Every important action performed in the ERP.','<button class="btn btn-secondary" id="export-audit">⇩ Export CSV</button>')}<div class="filter-bar"><div class="filter-item search-wide"><input id="audit-search" placeholder="Search user, action, module or details"></div><div class="filter-item"><select id="audit-module"><option value="">All modules</option>${[...new Set(state.audit.map(a=>a.module))].map(x=>`<option>${esc(x)}</option>`).join('')}</select></div></div><section class="card table-card"><div class="table-wrap"><table><thead><tr><th>Date & Time</th><th>User</th><th>Action</th><th>Module</th><th>Details</th></tr></thead><tbody id="audit-body"></tbody></table></div></section>`;const draw=()=>{const q=document.getElementById('audit-search').value.toLowerCase(),m=document.getElementById('audit-module').value;const rows=state.audit.filter(a=>(!q||[a.userName,a.action,a.module,a.details].some(v=>String(v||'').toLowerCase().includes(q)))&&(!m||a.module===m));document.getElementById('audit-body').innerHTML=rows.length?rows.slice(0,500).map(a=>`<tr><td>${fmtDate(a.createdAt,true)}</td><td>${esc(a.userName)}</td><td><span class="role-chip">${esc(a.action)}</span></td><td>${esc(a.module)}</td><td>${esc(a.details)}</td></tr>`).join(''):`<tr><td colspan="5">${emptyState('◷','No audit records','Actions performed in the ERP will be tracked here.')}</td></tr>`;};draw();document.getElementById('audit-search').oninput=draw;document.getElementById('audit-module').onchange=draw;document.getElementById('export-audit').onclick=()=>{const csv=['Date,User,Action,Module,Details',...state.audit.map(a=>[a.createdAt,a.userName,a.action,a.module,a.details].map(csvCell).join(','))].join('\n');downloadBlob(csv,'factory-erp-audit-log.csv','text/csv');};
   }
 
   function renderSettings() {
@@ -2684,7 +2512,7 @@
       <div class="info-banner"><div>🔐</div><div><strong>Authentication is secured by Supabase</strong><p>Passwords are securely hashed by Supabase Auth. Super Admins and authorised Managers create temporary passwords, and users must change them at first login. Projects, production records, shortages, issues, audit entries and notifications are stored in the shared Supabase database and synchronized across authorized users.</p></div></div>
       <div class="grid grid-2"><section class="card"><div class="card-header"><div><h3>Company Configuration</h3><p>Branding and display preferences</p></div></div><div class="card-body"><form id="settings-form"><div class="form-group"><label>Company / ERP Name</label><input name="companyName" value="${esc(state.settings.companyName)}"></div><div class="form-group"><label>Factory Name</label><input name="factoryName" value="${esc(state.settings.factoryName)}"></div><div class="setting-row"><div class="setting-copy"><strong>Dark Mode</strong><span>Use dark industrial interface</span></div><button type="button" class="toggle ${state.settings.theme==='dark'?'on':''}" id="settings-theme"></button></div><button class="btn btn-primary" type="submit" style="margin-top:16px">Save Settings</button></form></div></section>
       <section class="card"><div class="card-header"><div><h3>Backup & Restore</h3><p>Protect shared ERP records</p></div></div><div class="card-body"><div class="setting-row"><div class="setting-copy"><strong>Download Full Backup</strong><span>Projects, production history, shortages and settings</span></div><button class="btn btn-secondary" id="download-backup">⇩ Backup</button></div><div class="setting-row"><div class="setting-copy"><strong>Restore Backup</strong><span>Replace shared operational data from a JSON backup</span></div><button class="btn btn-secondary" id="restore-backup">⇧ Restore</button></div><div class="setting-row"><div class="setting-copy"><strong class="text-danger">Reset All Data</strong><span>Delete all shared ERP operational records</span></div><button class="btn btn-danger" id="reset-data">Reset</button></div></div></section></div>
-      <section class="card" style="margin-top:18px"><div class="card-header"><div><h3>System Information</h3><p>Deployment characteristics</p></div></div><div class="card-body"><div class="grid grid-4">${miniMetric('Technology','HTML / CSS / JS')}${miniMetric('Authentication','Supabase Auth')}${miniMetric('Deployment','Netlify Functions')}${miniMetric('Version','11.1 Procurement Alignment')}</div></div></section>`;
+      <section class="card" style="margin-top:18px"><div class="card-header"><div><h3>System Information</h3><p>Deployment characteristics</p></div></div><div class="card-body"><div class="grid grid-4">${miniMetric('Technology','HTML / CSS / JS')}${miniMetric('Authentication','Supabase Auth')}${miniMetric('Deployment','Netlify Functions')}${miniMetric('Version','11.0 Stability Audit')}</div></div></section>`;
     const settingsForm = document.getElementById('settings-form');
     settingsForm.onsubmit = async event => {
       event.preventDefault();
@@ -2710,7 +2538,7 @@
     document.getElementById('settings-theme').onclick = toggleTheme;
     document.getElementById('download-backup').onclick = () => downloadBlob(
       JSON.stringify(state, null, 2),
-      `procurement-erp-backup-${todayISO()}.json`,
+      `factory-erp-backup-${todayISO()}.json`,
       'application/json',
     );
     document.getElementById('restore-backup').onclick = () => document.getElementById('backup-file-input').click();
@@ -2738,7 +2566,6 @@
             settings: { ...defaultState().settings, ...(data.settings || existingSettings) },
             users: existingUsers,
           };
-          state.items = (state.items || []).map(row => normalizeProductionItemRecord(row, true));
           audit('RESTORE', 'Settings', `Restored ERP backup ${file.name}`);
           await saveState();
           render();
@@ -2772,7 +2599,7 @@
   function openModal(title, body, footer='', size='') {
     closeModal();const el=document.createElement('div');el.className='modal-backdrop';el.id='app-modal';el.innerHTML=`<div class="modal ${size}"><div class="modal-header"><h3>${esc(title)}</h3><button class="close-btn" data-close-modal>×</button></div><div class="modal-body">${body}</div>${footer?`<div class="modal-footer">${footer}</div>`:''}</div>`;document.body.appendChild(el);el.querySelectorAll('[data-close-modal]').forEach(b=>b.onclick=closeModal);el.addEventListener('mousedown',e=>{if(e.target===el)closeModal();});
   }
-  function closeModal(){clearTimeout(projectItemsModalReloadTimer);projectItemsModalReloadTimer=null;activeProjectItemsModalProjectId='';document.getElementById('app-modal')?.remove();}
+  function closeModal(){document.getElementById('app-modal')?.remove();}
 
   document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal();});
   window.addEventListener('resize',()=>{if(authSession&&currentRoute==='dashboard'){clearTimeout(window.__chartTimer);window.__chartTimer=setTimeout(()=>renderDashboard(),150);}});

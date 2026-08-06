@@ -1,15 +1,13 @@
 {
-  "name": "profile-solutions-procurement-erp",
-  "version": "11.3.1",
+  "name": "profile-solutions-factory-erp",
+  "version": "11.1.0",
   "private": true,
-  "description": "Profile Solutions Factory ERP with erp_records-only Section bulk upload, assignment, executive visibility and dashboard integration",
+  "description": "Profile Solutions Factory ERP Section assignment release with atomic idempotent Supabase mutations, serialized authentication startup, incremental Realtime synchronization, controlled retries and production diagnostics",
   "scripts": {
     "check": "node scripts/check.mjs",
     "test:stability": "node scripts/stability-tests.mjs",
-    "test:item-sync": "node scripts/project-items-sync-tests.mjs",
-    "test:line-items": "node scripts/project-line-items-tests.mjs",
-    "test:section": "node scripts/section-assignment-tests.mjs",
-    "audit": "node scripts/audit.mjs"
+    "audit": "node scripts/audit.mjs",
+    "test:section": "node scripts/section-assignment-tests.mjs"
   },
   "engines": {
     "node": ">=20"

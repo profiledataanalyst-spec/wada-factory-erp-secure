@@ -1,52 +1,39 @@
-# Profile Solutions Factory ERP v11.3.1
+# Profile Solutions Factory ERP
 
-This release preserves the existing ERP UI, authentication, roles, production stages, dashboards and workflows while adding the approved **Section Assignment & Dashboard Integration**.
+Version 11.1 adds Section-based production assignment to the existing stable Factory ERP without redesigning or replacing its existing workflows.
 
-## Approved Sections
+## Section release scope
 
-- Aluminium
-- Store
-- Fabrication
-- Outsource
+- Bulk upload and manual production items support `Section`.
+- Allowed values: `Aluminium`, `Store`, `Fabrication`, `Outsource`.
+- Super Admins and Managers can assign individual items or matching Section batches to active Executives.
+- Executives see and update only production items assigned to their account.
+- Factory Dashboard includes a live Section Overview.
+- Section is available in Production Tracker, Operations, project details, shortages, reports, Excel/CSV exports, search, and filters.
+- Existing records and old upload files without Section remain supported as `Not Specified`.
 
-## Architecture
+## Runtime architecture
 
 - Static HTML/CSS/JavaScript frontend
 - Supabase Authentication
-- Supabase PostgreSQL and Realtime
-- Protected Netlify Functions
-- `public.erp_records` is the single source of truth for operational data
-- Atomic and idempotent mutations through migration 004
-- Section assignment through `supabase/005_section_assignment_erp_records.sql`
+- Supabase PostgreSQL shared operational records
+- Supabase Realtime incremental synchronization
+- Netlify Functions for protected role-checked mutations
+- Atomic/idempotent mutation RPC installed by migration 004
+- Section validation, assignment indexes, and Executive row visibility installed by migration 005
 
-This release does **not** require a `project_line_items` table.
-
-## Included Section integration
-
-- Required `SECTION` column in Excel/CSV bulk upload
-- Strict allowed-value validation
-- Section in Projects Add Items and Production Tracker
-- Super Admin/Manager assignment by Project + Section
-- Assigned-only Executive work dashboard
-- Factory Overview Section Summary
-- Section search, filters, reports and exports
-- Database-confirmed saves and existing Realtime synchronization
-
-## Validation
+## Validate
 
 ```cmd
-node scripts\check.mjs
-node scripts\stability-tests.mjs
-node scripts\project-line-items-tests.mjs
-node scripts\project-items-sync-tests.mjs
-node scripts\section-assignment-tests.mjs
-npm run audit
+npm run check
+npm run test:stability
+npm run test:section
 ```
 
-## Deployment
+## Deploy
 
-Follow `REDEPLOY_V11.3.1.md`.
+Follow `SECTION_FEATURE_DEPLOYMENT.md`. Run migrations through `supabase/005_section_task_assignment.sql` before using the Version 11.1 frontend.
 
 ## Security
 
-Keep `SUPABASE_SECRET_KEY` only in protected hosting-function environment variables. Never place it in browser code or a public repository.
+Never place `SUPABASE_SECRET_KEY` in browser code or commit it to GitHub. It belongs only in protected hosting environment variables.
