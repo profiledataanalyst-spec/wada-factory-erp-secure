@@ -8,13 +8,13 @@ const required = [
   'netlify/functions/auth-admin.mjs', 'netlify/functions/erp-data.mjs',
   'supabase/001_auth_profiles.sql', 'supabase/002_temporary_password_workflow.sql',
   'supabase/003_shared_operational_data.sql', 'supabase/004_stability_performance.sql',
-  'supabase/005_section_task_assignment.sql',
+  'supabase/005_section_task_assignment.sql', 'supabase/006_verified_section_assignment.sql',
   'TECHNICAL_AUDIT_REPORT.md', 'STABILITY_DEPLOYMENT.md',
   'scripts/stability-tests.mjs', 'scripts/section-assignment-tests.mjs',
 ];
 for (const file of required) await access(new URL(file, root));
 
-const [html, css, js, configFn, authFn, dataFn, migration, sectionMigration, netlify] = await Promise.all([
+const [html, css, js, configFn, authFn, dataFn, migration, sectionMigration, verifiedAssignmentMigration, netlify] = await Promise.all([
   readFile(new URL('index.html', root), 'utf8'),
   readFile(new URL('css/styles.css', root), 'utf8'),
   readFile(new URL('js/app.js', root), 'utf8'),
@@ -23,21 +23,22 @@ const [html, css, js, configFn, authFn, dataFn, migration, sectionMigration, net
   readFile(new URL('netlify/functions/erp-data.mjs', root), 'utf8'),
   readFile(new URL('supabase/004_stability_performance.sql', root), 'utf8'),
   readFile(new URL('supabase/005_section_task_assignment.sql', root), 'utf8'),
+  readFile(new URL('supabase/006_verified_section_assignment.sql', root), 'utf8'),
   readFile(new URL('netlify.toml', root), 'utf8'),
 ]);
 
 const fail = message => { throw new Error(message); };
-if (!html.includes('css/styles.css') || !html.includes('js/app.js')) fail('External application assets are not linked.');
+if (!html.includes('css/styles.css?v=11.2.0') || !html.includes('js/app.js?v=11.2.0')) fail('External application assets are not linked.');
 if (/<style[\s>]/i.test(html) || /<script>\s*\(\(\)\s*=>/i.test(html)) fail('Large inline CSS/JavaScript bundles remain in index.html.');
 if (!html.includes('@supabase/supabase-js@2.110.8')) fail('The Supabase browser dependency is not pinned.');
 if (!html.includes('id="excel-file-input"') || !html.includes('id="backup-file-input"')) fail('Required hidden file inputs are missing.');
 if (!css.includes('Profile Solutions Enterprise UI') || !css.includes('.is-busy-control')) fail('Production UI stylesheet is incomplete.');
 
-if (!js.includes("const APP_VERSION = '11.1.1'")) fail('Client version 11.1.1 is missing.');
+if (!js.includes("const APP_VERSION = '11.2.0'")) fail('Client version 11.2.0 is missing.');
 if (!js.includes('prepareAuthenticatedSession') || !js.includes('ensureFreshSession')) fail('Resilient authentication/session startup is missing.');
 if (!js.includes('authenticatedStartupPromise') || (js.match(/onAuthStateChange/g) || []).length !== 1) fail('Authentication startup is duplicated or not serialized.');
 if (!js.includes('pendingRealtimePayloads') || !js.includes('drainRealtimePayloads')) fail('Incremental Realtime event queuing is missing.');
-if ((js.match(/\.channel\(`/g) || []).length !== 1) fail('Duplicate Realtime channel creation was detected.');
+if ((js.match(/\.channel\(/g) || []).length !== 1) fail('Duplicate Realtime channel creation was detected.');
 if (!js.includes('database-confirmed') && !js.includes('persistItemWorkflowChange')) fail('Confirmed production workflow persistence is missing.');
 if (!js.includes('operationCount > 5000') || !js.includes('payloadBytes > 4500000')) fail('Atomic generic mutation size protection is missing.');
 if (js.includes('splitOperationalChanges(')) fail('Non-atomic multi-batch generic synchronization remains enabled.');
@@ -55,12 +56,17 @@ if (!migration.includes('create table if not exists public.erp_mutation_log')) f
 if (!migration.includes('create or replace function public.apply_erp_changes')) fail('Atomic mutation RPC migration is missing.');
 if (!migration.includes('pg_advisory_xact_lock') || !migration.includes('ERP_CONFLICT')) fail('Concurrency controls are missing from the migration.');
 if (!migration.includes('erp_records_notifications_user_read_idx')) fail('Targeted performance indexes are missing.');
-if (!configFn.includes("applicationVersion: '11.1.1'") || !configFn.includes('stabilityMigrationReady')) fail('Version 11.1 configuration readiness check is missing.');
+if (!configFn.includes("applicationVersion: '11.2.0'") || !configFn.includes('stabilityMigrationReady') || !configFn.includes('database-rpc-locked-verified-reloaded')) fail('Version 11.2 configuration readiness is missing.');
 if (!sectionMigration.includes('trg_validate_erp_item_section_assignment') || !sectionMigration.includes('Role scoped ERP record access')) fail('Section assignment database migration is incomplete.');
+if (!verifiedAssignmentMigration.includes('create or replace function public.assign_erp_section_work') || !verifiedAssignmentMigration.includes('for update') || !verifiedAssignmentMigration.includes('v_verified_count <> v_target_count')) fail('Verified Section assignment migration is incomplete.');
 if (!js.includes('Assign Section Work') || !js.includes('renderExecutiveDashboard') || !js.includes('Section Overview')) fail('Section assignment UI is incomplete.');
 if (!js.includes('Items with no Section (set Section and assign)') || !js.includes('matchingAssignmentTargets')) fail('Legacy unsectioned item assignment recovery is missing.');
 if (js.includes('id=\"add-item\"') || js.includes("document.getElementById('add-item')")) fail('Manual Add Item control is still present in Production Tracker.');
 if (!dataFn.includes('SECTION_VALUES') || !dataFn.includes('This production task is not assigned to your account')) fail('Section or assignment API validation is incomplete.');
+if (!dataFn.includes("action === 'assign-section-work'") || !dataFn.includes('/rest/v1/rpc/assign_erp_section_work') || !dataFn.includes('verified !== updated')) fail('Dedicated verified Section assignment API is incomplete.');
+if (!dataFn.includes('assertNoManualItemCreation') || !dataFn.includes('Manual Production item creation is disabled')) fail('Server-side manual Production item creation protection is missing.');
+if (!js.includes("callDataApi('assign-section-work'") || !js.includes('persisted!==updated') || !js.includes('await loadOperationalData({renderAfter:false})')) fail('Client-side database read-back verification is incomplete.');
+if (!js.includes('broadcastOperationalReload') || !js.includes("event: 'operational-reload'")) fail('Cross-user assignment reload broadcast is missing.');
 if (!netlify.includes('functions = "netlify/functions"') || !netlify.includes('Cache-Control')) fail('Netlify Function or cache configuration is incomplete.');
 
-console.log('Project check passed: Profile Solutions ERP v11.1.1 Section assignment hotfix, assigned-work Executive security, Section Overview, reporting integration, stability audit, atomic idempotent database writes, serialized session startup, incremental Realtime synchronization, controlled retries, shared Supabase data, existing permissions and UI are present.');
+console.log('Project check passed: Profile Solutions ERP v11.2.0 uses a dedicated locked database RPC for Section assignment, verifies every updated item, reloads the database before success, rejects zero-match false success, blocks manual Production item creation, preserves assigned-work Executive security, and retains all existing workflows and UI.');

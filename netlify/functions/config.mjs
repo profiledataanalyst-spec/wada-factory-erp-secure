@@ -76,9 +76,10 @@ export default async () => {
       realtimeMode: 'incremental-postgres-changes',
       sharedDataReady: records.available,
       stabilityMigrationReady: mutationLog.available,
-      applicationVersion: '11.1.1',
+      applicationVersion: '11.2.0',
       productionItemPermissions: 'admin-manager-section-assignment-executive-assigned-items-only',
       productionStageSync: 'database-confirmed-atomic-idempotent-realtime',
+      sectionAssignmentMode: 'database-rpc-locked-verified-reloaded',
       bulkUploadMode: 'validated-section-aware-atomic-supabase-import',
       architectureMode: 'single-source-atomic-resilient',
     }), { status: 200, headers: JSON_HEADERS });

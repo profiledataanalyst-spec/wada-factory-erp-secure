@@ -1,6 +1,6 @@
 # Profile Solutions Factory ERP
 
-Version 11.1.1 is the Section-assignment hotfix release of the shared multi-user Factory ERP.
+Version 11.2.0 is the final database-verified Section-assignment release of the shared multi-user Factory ERP.
 
 ## Runtime architecture
 
@@ -19,7 +19,7 @@ npm run audit
 
 ## Deploy
 
-Follow `SECTION_FEATURE_DEPLOYMENT.md`. Migrations 001–005 must be installed before the v11.1.1 frontend is used. Existing v11.1 deployments do not require another SQL migration for this hotfix.
+Follow `SECTION_FEATURE_DEPLOYMENT.md`. Migrations 001–006 must be installed before the v11.2.0 frontend is used. Migration 006 adds the atomic, verified Section assignment database function and does not alter existing records.
 
 ## Security
 

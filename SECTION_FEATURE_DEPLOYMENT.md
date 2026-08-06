@@ -1,68 +1,59 @@
-# Factory ERP v11.1.1 — Section Assignment Deployment
+# Factory ERP v11.2.0 — Final Section Assignment Deployment
 
-This package applies only to the attached Factory ERP. No Procurement ERP files are included or modified.
+This release applies only to the Factory ERP.
 
-## Before deployment
+## Root-cause fix
 
-Back up the current Supabase project. The migration is backward-compatible: it does not rewrite or delete existing operational records. Existing items without a Section remain available and display as `Not Specified`.
+The earlier assignment flow changed production items in browser memory and then used the general state synchronizer. The success message was not based on a database read-back, so a stale or unmatched Section could produce a misleading success notification with zero synchronized items.
 
-## Existing Factory ERP deployment
+Version 11.2.0 removes that dependency. Section assignment now runs through a dedicated Supabase database function that:
 
-1. Open the existing Factory ERP Supabase project.
-2. Go to **SQL Editor**.
-3. Run `supabase/005_section_task_assignment.sql` once, after confirming migrations 001–004 are already installed.
-4. Deploy this complete package to the existing Factory ERP Netlify site.
-5. Keep the existing environment variables unchanged:
+1. Reads and locks matching production-item rows directly in the database.
+2. Updates every matching row in one transaction.
+3. Stores Section, Executive ID/name, assigned-by details, assignment timestamp, due date and priority.
+4. Verifies every target row before committing.
+5. Rolls back if updated and verified counts differ.
+6. Creates the assignment audit entry and Executive notification in the same transaction.
+7. Returns the exact updated record IDs and verified count.
+8. Forces the assigning browser to reload database data before success is shown.
+9. Broadcasts a reload signal to other connected ERP users.
 
-```text
-SUPABASE_URL
-SUPABASE_PUBLISHABLE_KEY
-SUPABASE_SECRET_KEY
-```
+## Required database step
 
-6. After deployment, open `/api/config` and confirm `applicationVersion` is `11.1.1`.
-7. Sign in as Super Admin or Manager and download the latest bulk-upload workbook from the ERP.
+Run this file once in the Factory ERP Supabase SQL Editor:
 
-## New Factory ERP deployment
+`supabase/006_verified_section_assignment.sql`
 
-Run these SQL files in order:
+Migrations `001` through `005` must already be installed. Migration `006` adds a protected database function only; it does not delete or rewrite existing production records.
 
-```text
-supabase/001_auth_profiles.sql
-supabase/002_temporary_password_workflow.sql
-supabase/003_shared_operational_data.sql
-supabase/004_stability_performance.sql
-supabase/005_section_task_assignment.sql
-```
+## Netlify deployment
 
-Then deploy the project to Netlify with:
+1. Back up the current deployed project.
+2. Run migration `006_verified_section_assignment.sql` in Supabase.
+3. Deploy the complete v11.2.0 project folder or ZIP to the existing Factory ERP Netlify site.
+4. Use **Clear cache and deploy site** so the previous JavaScript bundle containing the old Add Item control is not reused.
+5. Open `/api/config` and confirm `applicationVersion` is `11.2.0`.
+6. Hard refresh the ERP using `Ctrl + Shift + R`.
 
-```text
-Base directory: blank
-Build command: blank
-Publish directory: .
-Functions directory: netlify/functions
-```
+The JavaScript and CSS links include a v11.2.0 cache-busting query parameter.
 
-## Required post-deployment verification
+## Verification after deployment
 
-1. Upload the included `ERP_Bulk_Upload_Template.xlsx` with valid Section values.
-2. Confirm an invalid value such as `Painting` is rejected.
-3. Confirm a blank Section from an older workbook is accepted and shown as `Not Specified`. To classify legacy records, use **Assign Section Work** → select one Project → choose **Items with no Section (set Section and assign)**.
-4. Assign one Section to an active Executive as Super Admin or Manager.
-5. Sign in as that Executive and confirm only assigned production work is visible.
-6. Confirm another Executive cannot see or update that task.
-7. Check Section Overview counts after assignment, stage updates, and completion.
-8. Run Production, Project, Stage, Delay, and Shortage reports and verify Section appears in CSV and Excel exports.
+1. Upload a workbook containing valid Section values.
+2. Confirm the Production Tracker shows the imported Section.
+3. Open **Assign Section Work**.
+4. Choose a Section and Executive. The default scope assigns or reassigns every matching item.
+5. Confirm the preview count, then assign.
+6. A success notification must show a positive database-verified count.
+7. Refresh the browser and confirm the assignment remains.
+8. Sign in as the assigned Executive and confirm only assigned tasks appear.
+9. Confirm Factory Overview, Operations and Reports show the same assignment data.
+10. Select a Section with no matching items and confirm a warning is shown instead of success.
 
-## Local validation commands
+## Important behavior
 
-```cmd
-npm run check
-npm run test:stability
-npm run test:section
-```
-
-## v11.1.1 hotfix note
-
-No new migration is required when upgrading from v11.1. Deploy the complete v11.1.1 package after migration 005 is already installed. The manual Add Item control has been removed; use Excel Import for new production items.
+- No **Add Item** button is available in Production or Projects.
+- New production items are accepted only through Bulk Upload.
+- The server rejects manual creation through the general synchronization endpoint.
+- A zero-row database result never produces a success message.
+- If database verification fails, the transaction is rolled back.

@@ -1,34 +1,40 @@
-# Factory ERP v11.1.1 — Section Assignment Validation Report
+# Factory ERP v11.2.0 — Final Validation Report
 
-Validation completed against the attached Factory ERP source package.
+## Automated checks completed
 
-## Implemented
+- `npm run check`
+- `npm run test:section`
+- `npm run test:stability`
+- `npm run audit`
 
-- New Section column in Excel and CSV bulk-upload templates.
-- Allowed values: Aluminium, Store, Fabrication, Outsource.
-- Client and Netlify Function validation for invalid Section values.
-- Backward compatibility for existing records and legacy workbooks without Section.
-- Individual and batch Section-based task assignment for Super Admin and Manager.
-- Live matching-count preview before assignment.
-- Explicit recovery workflow for legacy items without Section values.
-- Manual Add Item control removed; new items remain Excel-import controlled.
-- Executive assigned-work-only dashboard and workflow permissions.
-- Live Section Overview cards on the Factory Dashboard.
-- Section integration across production, projects, shortages, reports, exports, search, and filters.
-- Supabase validation trigger, indexes, and Executive read policy.
+All checks passed.
 
-## Automated checks passed
+## Verified implementation
 
-```text
-node --check js/app.js
-node --check netlify/functions/erp-data.mjs
-npm run check
-npm run test:stability
-npm run test:section
-```
+- Bulk Upload canonicalizes and validates Aluminium, Store, Fabrication and Outsource.
+- Invalid Section values are rejected by the client/API/database validation chain.
+- Manual Add Item controls are absent.
+- General API synchronization rejects creation of new production items; Bulk Upload remains the creation route.
+- Super Admin and Manager assignment uses the dedicated `assign-section-work` API action.
+- The API calls `assign_erp_section_work` rather than relying on browser state.
+- Matching rows are locked before update.
+- The database verifies that every target row contains the requested Section, Executive ID, assigned-by ID and assignment timestamp.
+- Mismatched counts raise an exception and roll back the transaction.
+- Zero matches return `ok: false`, `updated: 0` and the required user-facing message.
+- The frontend reloads authoritative Supabase records and verifies every returned record ID before displaying success.
+- A shared Realtime broadcast asks connected users to reload authoritative data after assignment.
+- Existing Realtime reconnect and fallback reload logic remains enabled.
+- Assignment audit and Executive notification records are created within the same database transaction.
+- Executive assigned-work access restrictions remain in place.
+- Existing production-stage concurrency and stability tests continue to pass.
 
-The Section test verifies that invalid Section values are rejected, lowercase valid values are canonicalized, legacy unsectioned tasks have an explicit recovery scope, the Add Item control is absent, and an Executive cannot update a task assigned to another Executive.
+## Deployment-dependent checks
 
-## Environment limitation
+The following require the user's live Supabase and Netlify environments:
 
-The package was statically and automatically validated in the local project environment. A final browser test against the organisation's live Netlify and Supabase environment must be completed after migration 005 is applied because live credentials and production data are not available in this workspace.
+- Running migration `006_verified_section_assignment.sql`.
+- Confirming the live Supabase Realtime publication and network connectivity.
+- Multi-browser testing with real Super Admin, Manager and Executive accounts.
+- Confirming the deployed site is not serving the earlier cached JavaScript bundle.
+
+The application intentionally refuses to report assignment success when migration 006 is missing or when database verification fails.

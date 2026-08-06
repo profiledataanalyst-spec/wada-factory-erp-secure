@@ -110,7 +110,7 @@
     { id: 'settings', label: 'Settings & Backup', icon: ICONS.settings, roles: ['ADMIN'], section: 'Administration' }
   ];
 
-  const APP_VERSION = '11.1.1';
+  const APP_VERSION = '11.2.0';
   const API_TIMEOUT_MS = 22000;
   const SESSION_REFRESH_WINDOW_SECONDS = 90;
   const TRANSIENT_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
@@ -719,7 +719,7 @@
     const requestId = payload.requestId || createRequestId('DATA');
     return authenticatedApiRequest('/api/erp-data', { action, ...payload, requestId }, {
       retries: 2,
-      timeoutMs: action === 'bulk-import' ? 60000 : API_TIMEOUT_MS,
+      timeoutMs: ['bulk-import', 'assign-section-work'].includes(action) ? 60000 : API_TIMEOUT_MS,
     });
   }
 
@@ -1222,6 +1222,25 @@
     }, 120000);
   }
 
+  async function broadcastOperationalReload(reason = 'operational-change', requestId = '') {
+    if (!realtimeChannel || realtimeStatus !== 'SUBSCRIBED') {
+      subscribeOperationalRealtime(true);
+      return false;
+    }
+    try {
+      const result = await realtimeChannel.send({
+        type: 'broadcast',
+        event: 'operational-reload',
+        payload: { reason: String(reason || 'operational-change'), requestId: String(requestId || '') },
+      });
+      return result === 'ok';
+    } catch (error) {
+      console.warn('Operational reload broadcast failed', error);
+      scheduleRealtimeReconnect();
+      return false;
+    }
+  }
+
   function subscribeOperationalRealtime(force = false) {
     if (!supabaseClient || !authSession) return;
     if (!force && realtimeChannel && ['SUBSCRIBED', 'SUBSCRIBING'].includes(realtimeStatus)) return;
@@ -1234,8 +1253,9 @@
 
     realtimeStatus = 'SUBSCRIBING';
     const channel = supabaseClient
-      .channel(`erp-records-${authSession.user.id}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'erp_records' }, applyRealtimePayload);
+      .channel('erp-records-shared-v11-2')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'erp_records' }, applyRealtimePayload)
+      .on('broadcast', { event: 'operational-reload' }, () => scheduleOperationalReload(0));
     realtimeChannel = channel;
     channel.subscribe(status => {
       if (generation !== realtimeGeneration || realtimeChannel !== channel) return;
@@ -1878,11 +1898,11 @@
       <div class="form-group"><label>Assign to Executive *</label><select name="executiveId" ${item?'':'required'}>${item?'<option value="">Unassigned</option>':''}${executives.map(executive=>`<option value="${executive.id}" ${item?.assignedExecutiveId===executive.id?'selected':''}>${esc(executive.name)}</option>`).join('')}</select></div>
       <div class="form-group"><label>Due date</label><input name="dueDate" type="date" value="${item?taskDueDate(item):''}"></div>
       <div class="form-group"><label>Priority</label><select name="priority">${TASK_PRIORITIES.map(priority=>`<option ${taskPriority(item)===priority?'selected':''}>${priority}</option>`).join('')}</select></div>
-      ${item?'':`<div class="form-group"><label>Assignment scope</label><select name="scope"><option value="unassigned">Only unassigned tasks in selected Section</option><option value="all">All tasks in selected Section (reassign)</option><option value="unsectioned">Items with no Section (set Section and assign)</option></select></div>`}
+      ${item?'':`<div class="form-group"><label>Assignment scope</label><select name="scope"><option value="all">All tasks in selected Section (assign or reassign)</option><option value="unassigned">Only unassigned tasks in selected Section</option><option value="unsectioned">Items with no Section (set Section and assign)</option></select></div>`}
     </div><div class="info-banner"><div>↗</div><div><strong>Section-based assignment</strong><p id="assignment-preview">${item?'Select the Section and Executive for this production item.':'Select a Section to preview matching production items.'}</p></div></div></form>`,`<button class="btn btn-secondary" data-close-modal>Cancel</button><button class="btn btn-primary" id="save-assignment">${item?'Save Assignment':'Assign Matching Tasks'}</button>`);
     const form=document.getElementById('assignment-form'),saveButton=document.getElementById('save-assignment'),preview=document.getElementById('assignment-preview');
     const updatePreview=()=>{
-      const fd=new FormData(form),section=canonicalSection(fd.get('section')),projectId=String(fd.get('projectId')||''),scope=String(fd.get('scope')||'unassigned'),executiveId=String(fd.get('executiveId')||'');
+      const fd=new FormData(form),section=canonicalSection(fd.get('section')),projectId=String(fd.get('projectId')||''),scope=String(fd.get('scope')||'all'),executiveId=String(fd.get('executiveId')||'');
       if(item){
         preview.textContent=section?`This item will be tagged as ${section} and ${executiveId?'assigned to the selected Executive':'left unassigned'}.`:'Select a valid Section.';
         saveButton.disabled=!section;
@@ -1893,51 +1913,58 @@
       const targets=matchingAssignmentTargets({section,projectId,scope});
       const projectLabel=projectId?projectById(projectId)?.name||'selected project':'all projects';
       if(!targets.length){
-        preview.textContent=scope==='unsectioned'?`No items without a Section were found in ${projectLabel}.`:`No ${section} production items match the selected scope in ${projectLabel}.`;
-        saveButton.disabled=true;
+        preview.textContent=scope==='unsectioned'?`No items without a Section are currently loaded for ${projectLabel}. Submit to verify the latest database data.`:`No ${section} items are currently loaded for ${projectLabel}. Submit to verify the latest database data.`;
+        saveButton.disabled=!executiveId;
         return;
       }
-      preview.textContent=scope==='unsectioned'?`${targets.length} item(s) without a Section in ${projectLabel} will be tagged as ${section} and assigned.`:`${targets.length} ${section} production item(s) in ${projectLabel} will be assigned.`;
+      preview.textContent=scope==='unsectioned'?`${targets.length} item(s) without a Section in ${projectLabel} are currently visible and will be tagged as ${section} and assigned after database verification.`:`${targets.length} ${section} production item(s) are currently visible and will be assigned after database verification.`;
       saveButton.disabled=!executiveId;
     };
     form.querySelectorAll('select,input').forEach(control=>control.addEventListener('change',updatePreview));
     updatePreview();
     saveButton.onclick=async event=>{
       if(!form.reportValidity())return;
-      const fd=new FormData(form),section=canonicalSection(fd.get('section')),executiveId=String(fd.get('executiveId')||''),executive=userById(executiveId),dueDate=String(fd.get('dueDate')||''),priority=String(fd.get('priority')||'Medium'),actor=getCurrentUser();
+      const fd=new FormData(form),section=canonicalSection(fd.get('section')),executiveId=String(fd.get('executiveId')||''),executive=userById(executiveId),dueDate=String(fd.get('dueDate')||''),priority=String(fd.get('priority')||'Medium');
       if(!section)return toast('Invalid Section',`Select one of: ${SECTIONS.join(', ')}.`,'error');
       if(!item&&!executive)return toast('Executive required','Select an Executive for the section assignment.','error');
-      const projectId=String(fd.get('projectId')||''),scope=String(fd.get('scope')||'unassigned');
+      const projectId=String(fd.get('projectId')||''),scope=String(fd.get('scope')||'all');
       if(!item&&scope==='unsectioned'&&!projectId)return toast('Project required','Select one project before assigning items that do not yet have a Section.','warning');
-      const targets=matchingAssignmentTargets({item,section,projectId,scope});
-      if(!targets.length){
-        const message=scope==='unsectioned'?'No items without a Section were found in the selected project.':'No production items match the selected Section and assignment scope. For legacy records, choose “Items with no Section”.';
-        return toast('No matching tasks',message,'warning');
-      }
       await withOperationalMutationLock(`task-assignment:${item?.id||section}:${executiveId}:${projectId||'all'}:${scope}`,event.currentTarget,async()=>{
         setFormBusy(form,true);
         try{
-          const assignedAt=nowISO();
-          targets.forEach(target=>{
-            target.section=section;
-            target.assignedExecutiveId=executiveId;
-            target.assignedExecutiveName=executive?.name||'';
-            target.assignedById=actor.id;
-            target.assignedByName=actor.name;
-            target.assignedAt=executiveId?assignedAt:'';
-            target.dueDate=dueDate||target.dueDate||target.targetDate||projectById(target.projectId)?.targetDate||'';
-            target.priority=priority||target.priority||projectById(target.projectId)?.priority||'Medium';
-            target.updatedAt=assignedAt;
-            target.history=target.history||[];
-            target.history.push(historyEvent(target,executiveId?'Task Assigned':'Task Unassigned',executiveId?'Assigned':'Unassigned',executiveId?`Assigned to ${executive.name} for ${section}. Due ${dueDate||'not specified'}; priority ${priority}.`:`Assignment removed by ${actor.name}.`));
+          const result=await callDataApi('assign-section-work',{
+            itemId:item?.id||'',section,executiveId,projectId,scope,dueDate,priority
           });
-          if(executiveId)notify(executiveId,item?'Production task assigned':'Section work assigned',item?`${item.itemName} (${section}) has been assigned to you.`:`${targets.length} ${section} production task(s) have been assigned to you.`,'Assignment',item?.id||targets[0].id);
-          audit(executiveId?'ASSIGN':'UNASSIGN','Production',`${executiveId?'Assigned':'Unassigned'} ${targets.length} ${section} task(s)${executive?` to ${executive.name}`:''}${scope==='unsectioned'?' and populated missing Section values':''}`,item?.id||'');
-          await saveState();
-          const updatedCount=targets.filter(target=>canonicalSection(target.section)===section&&target.assignedExecutiveId===executiveId).length;
-          closeModal();renderProduction();toast(executiveId?'Section work assigned':'Task unassigned',`${updatedCount} production item(s) assigned and synchronized successfully.`);
-        }catch(error){toast('Task assignment failed',error.message,'error');}
-        finally{setFormBusy(form,false);}
+          const updated=Number(result?.updated||0),verified=Number(result?.verified||0),recordIds=Array.isArray(result?.recordIds)?result.recordIds.map(String):[];
+          if(!result?.ok||updated<=0){
+            const message=result?.message||'No production items found for the selected section. Please verify the uploaded data and section mapping.';
+            toast('No production items assigned',message,'warning');
+            return;
+          }
+          if(verified!==updated||recordIds.length!==updated){
+            throw new Error('The database did not verify every matching production item. The assignment was not accepted as successful.');
+          }
+
+          await loadOperationalData({renderAfter:false});
+          const persisted=recordIds.filter(recordId=>{
+            const saved=itemById(recordId);
+            return saved&&canonicalSection(saved.section)===section&&String(saved.assignedExecutiveId||'')===executiveId;
+          }).length;
+          if(persisted!==updated){
+            scheduleOperationalReload(0);
+            throw new Error(`The database reported ${updated} update(s), but only ${persisted} could be confirmed after reloading. Refresh the ERP and retry.`);
+          }
+
+          await broadcastOperationalReload('section-assignment',result.requestId);
+          closeModal();
+          refreshCurrentDataView();
+          if(realtimeStatus!=='SUBSCRIBED')subscribeOperationalRealtime(true);
+          toast(executiveId?'Section work assigned':'Task unassigned',`${updated} production item(s) updated, reloaded and verified from the database.`);
+        }catch(error){
+          await loadOperationalData({renderAfter:false}).catch(()=>{});
+          refreshCurrentDataView();
+          toast('Task assignment failed',error.message||'The database did not complete the assignment.','error');
+        }finally{setFormBusy(form,false);}
       });
     };
   }
@@ -2547,7 +2574,7 @@
       <div class="info-banner"><div>🔐</div><div><strong>Authentication is secured by Supabase</strong><p>Passwords are securely hashed by Supabase Auth. Super Admins and authorised Managers create temporary passwords, and users must change them at first login. Projects, production records, shortages, issues, audit entries and notifications are stored in the shared Supabase database and synchronized across authorized users.</p></div></div>
       <div class="grid grid-2"><section class="card"><div class="card-header"><div><h3>Company Configuration</h3><p>Branding and display preferences</p></div></div><div class="card-body"><form id="settings-form"><div class="form-group"><label>Company / ERP Name</label><input name="companyName" value="${esc(state.settings.companyName)}"></div><div class="form-group"><label>Factory Name</label><input name="factoryName" value="${esc(state.settings.factoryName)}"></div><div class="setting-row"><div class="setting-copy"><strong>Dark Mode</strong><span>Use dark industrial interface</span></div><button type="button" class="toggle ${state.settings.theme==='dark'?'on':''}" id="settings-theme"></button></div><button class="btn btn-primary" type="submit" style="margin-top:16px">Save Settings</button></form></div></section>
       <section class="card"><div class="card-header"><div><h3>Backup & Restore</h3><p>Protect shared ERP records</p></div></div><div class="card-body"><div class="setting-row"><div class="setting-copy"><strong>Download Full Backup</strong><span>Projects, production history, shortages and settings</span></div><button class="btn btn-secondary" id="download-backup">⇩ Backup</button></div><div class="setting-row"><div class="setting-copy"><strong>Restore Backup</strong><span>Replace shared operational data from a JSON backup</span></div><button class="btn btn-secondary" id="restore-backup">⇧ Restore</button></div><div class="setting-row"><div class="setting-copy"><strong class="text-danger">Reset All Data</strong><span>Delete all shared ERP operational records</span></div><button class="btn btn-danger" id="reset-data">Reset</button></div></div></section></div>
-      <section class="card" style="margin-top:18px"><div class="card-header"><div><h3>System Information</h3><p>Deployment characteristics</p></div></div><div class="card-body"><div class="grid grid-4">${miniMetric('Technology','HTML / CSS / JS')}${miniMetric('Authentication','Supabase Auth')}${miniMetric('Deployment','Netlify Functions')}${miniMetric('Version','11.0 Stability Audit')}</div></div></section>`;
+      <section class="card" style="margin-top:18px"><div class="card-header"><div><h3>System Information</h3><p>Deployment characteristics</p></div></div><div class="card-body"><div class="grid grid-4">${miniMetric('Technology','HTML / CSS / JS')}${miniMetric('Authentication','Supabase Auth')}${miniMetric('Deployment','Netlify Functions')}${miniMetric('Version','11.2.0 Production Ready')}</div></div></section>`;
     const settingsForm = document.getElementById('settings-form');
     settingsForm.onsubmit = async event => {
       event.preventDefault();

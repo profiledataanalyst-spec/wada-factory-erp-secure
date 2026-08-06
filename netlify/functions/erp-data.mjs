@@ -275,6 +275,81 @@ async function getExistingRecordRow(url, secretKey, entity, recordId) {
   return Array.isArray(data) ? data[0] || null : null;
 }
 
+
+async function assignSectionWork(url, secretKey, caller, body) {
+  if (!['ADMIN', 'MANAGER'].includes(caller.role)) {
+    throw new HttpError(403, 'Only a Super Admin or Manager can assign Section work.');
+  }
+
+  const requestId = cleanRequestId(body.requestId, 'ASN');
+  const section = canonicalSectionValue(body.section);
+  if (!section) throw new HttpError(400, `Section is invalid. Allowed values: ${[...SECTION_VALUES].join(', ')}.`);
+
+  const itemId = String(body.itemId || '').trim();
+  const projectId = String(body.projectId || '').trim();
+  const executiveId = String(body.executiveId || '').trim();
+  const scope = String(body.scope || 'all').trim().toLowerCase();
+  const dueDate = String(body.dueDate || '').trim();
+  const priority = String(body.priority || 'Medium').trim() || 'Medium';
+
+  if (itemId) cleanRecordId(itemId);
+  if (projectId) cleanRecordId(projectId);
+  if (!itemId && !executiveId) throw new HttpError(400, 'Select an Executive for the Section assignment.');
+  if (executiveId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(executiveId)) {
+    throw new HttpError(400, 'The selected Executive ID is invalid.');
+  }
+  if (!['all', 'unassigned', 'unsectioned'].includes(scope)) throw new HttpError(400, 'Assignment scope is invalid.');
+  if (!itemId && scope === 'unsectioned' && !projectId) throw new HttpError(400, 'Select a project before assigning items without a Section.');
+  if (dueDate && !/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) throw new HttpError(400, 'Task due date must use YYYY-MM-DD format.');
+  if (!TASK_PRIORITY_VALUES.has(priority)) throw new HttpError(400, 'Task priority is invalid.');
+
+  try {
+    const { data } = await sbFetch(url, secretKey, '/rest/v1/rpc/assign_erp_section_work', {
+      method: 'POST',
+      retryable: true,
+      timeoutMs: 45000,
+      body: JSON.stringify({
+        p_request_id: requestId,
+        p_actor: caller.user.id,
+        p_section: section,
+        p_executive_id: executiveId,
+        p_project_id: projectId,
+        p_scope: scope,
+        p_item_id: itemId,
+        p_due_date: dueDate,
+        p_priority: priority,
+      }),
+    });
+
+    if (!data || typeof data !== 'object') throw new HttpError(502, 'The database returned an invalid assignment result.');
+    const updated = Number(data.updated || 0);
+    const verified = Number(data.verified || 0);
+    if (data.ok && (updated <= 0 || verified !== updated)) {
+      throw new HttpError(500, 'The database could not verify every Section assignment. No success was reported.');
+    }
+    return {
+      ...data,
+      updated,
+      verified,
+      recordIds: Array.isArray(data.recordIds) ? data.recordIds.map(String) : [],
+      requestId,
+    };
+  } catch (error) {
+    const message = String(error?.message || '');
+    if (/assign_erp_section_work|function .* does not exist|schema cache/i.test(message)) {
+      throw new HttpError(503, 'The verified Section assignment migration is not installed. Run supabase/006_verified_section_assignment.sql in Supabase SQL Editor.');
+    }
+    if (/ERP_SECTION_ASSIGNMENT_VERIFICATION_FAILED/i.test(message)) {
+      throw new HttpError(409, 'The database rolled back the assignment because every matching production item could not be verified. Reload the ERP and retry.');
+    }
+    if (/ERP_EXECUTIVE_INVALID_OR_INACTIVE/i.test(message)) throw new HttpError(400, 'The selected Executive is invalid or inactive.');
+    if (/ERP_SECTION_ASSIGNMENT_FORBIDDEN/i.test(message)) throw new HttpError(403, 'Only a Super Admin or Manager can assign Section work.');
+    if (/ERP_INVALID_SECTION/i.test(message)) throw new HttpError(400, `Section is invalid. Allowed values: ${[...SECTION_VALUES].join(', ')}.`);
+    if (/ERP_PROJECT_REQUIRED_FOR_UNSECTIONED_ASSIGNMENT/i.test(message)) throw new HttpError(400, 'Select a project before assigning items without a Section.');
+    throw error;
+  }
+}
+
 function cleanText(value, maxLength, field) {
   const text = String(value ?? '').trim();
   if (text.length > maxLength) throw new HttpError(400, `${field} is too long.`);
@@ -429,23 +504,21 @@ async function updateItemWorkflow(url, secretKey, caller, body) {
   }
 }
 
+async function assertNoManualItemCreation(url, secretKey, changes) {
+  for (const record of changes.items?.upsert || []) {
+    const existing = await getExistingRecord(url, secretKey, 'items', record.recordId);
+    if (!existing) {
+      throw new HttpError(400, 'New production items must be created through the Bulk Upload process. Manual Production item creation is disabled.');
+    }
+  }
+}
+
 async function assertExecutiveItemUpdates(url, secretKey, caller, changes) {
   if (caller.role !== 'EXECUTIVE') return;
   for (const record of changes.items?.upsert || []) {
     const existing = await getExistingRecord(url, secretKey, 'items', record.recordId);
 
-    // Executives may create production items, but only with the recognised production-item fields.
-    if (!existing) {
-      for (const key of Object.keys(record.payload)) {
-        if (!EXECUTIVE_ITEM_FIELDS.has(key)) throw new Error(`Executives cannot set production item field: ${key}`);
-      }
-      if (!String(record.payload.projectId || '').trim()) throw new Error('A production item must belong to a project.');
-      if (!String(record.payload.itemName || '').trim()) throw new Error('Production item name is required.');
-      if (String(record.payload.assignedExecutiveId || '') !== caller.user.id) throw new Error('Executive-created production items must be automatically assigned to the creating Executive.');
-      const stage = Number(record.payload.currentStage);
-      if (!Number.isInteger(stage) || stage < 0 || stage > 8) throw new Error('Production item stage is invalid.');
-      continue;
-    }
+    if (!existing) throw new HttpError(400, 'New production items must be created through the Bulk Upload process.');
 
     // After creation, Executives can update only workflow fields on tasks assigned to them.
     if (String(existing.assignedExecutiveId || '') !== caller.user.id) throw new Error('This production task is not assigned to your account.');
@@ -620,9 +693,15 @@ export default async (request) => {
       return response(200, { ok: true, record: result.record, version: result.version, warnings: result.warnings, requestId: result.requestId, deduplicated: Boolean(result.deduplicated) });
     }
 
+    if (action === 'assign-section-work') {
+      const result = await assignSectionWork(supabaseUrl, secretKey, caller, body);
+      return response(200, result);
+    }
+
     if (action === 'sync') {
       const changes = normalizeChanges(body.changes);
       assertRolePermissions(caller, changes);
+      await assertNoManualItemCreation(supabaseUrl, secretKey, changes);
       await assertExecutiveItemUpdates(supabaseUrl, secretKey, caller, changes);
       const result = await applyChanges(supabaseUrl, secretKey, caller, changes, body.requestId);
       return response(200, result);
