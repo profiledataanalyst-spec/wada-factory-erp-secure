@@ -4,6 +4,8 @@ const JSON_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
 };
 
+const SECTIONS = ['Aluminium', 'Store', 'Fabrication', 'Outsource'];
+
 const ENTITY_TYPES = new Set(['projects', 'items', 'shortages', 'issues', 'audit', 'notifications']);
 const UPSERT_PERMISSIONS = {
   ADMIN: new Set(ENTITY_TYPES),
@@ -17,8 +19,8 @@ const DELETE_PERMISSIONS = {
   EXECUTIVE: new Set(),
 };
 const EXECUTIVE_ITEM_FIELDS = new Set([
-  'id', 'projectId', 'itemName', 'rawItemName', 'site', 'size', 'quantity', 'quantitySource',
-  'quantityVerified', 'bomPath', 'bomNumber', 'jobNumber', 'bomIssueDate', 'drawingIssueDate',
+  'id', 'projectId', 'projectLineItemId', 'itemName', 'rawItemName', 'site', 'size', 'quantity', 'uom', 'dispatchQuantity', 'pendingQuantity', 'quantitySource',
+  'quantityVerified', 'section', 'assignedExecutiveId', 'assignedBy', 'assignedAt', 'priority', 'bomPath', 'bomNumber', 'jobNumber', 'bomIssueDate', 'drawingIssueDate',
   'indentNumber', 'indentIssueDate', 'targetDate', 'createdAt', 'currentStage', 'currentStageName',
   'status', 'approvalStatus', 'shortages', 'remarks', 'updatedAt', 'history'
 ]);
@@ -29,9 +31,17 @@ const WORKFLOW_PATCH_FIELDS = new Set([
   'currentStage', 'currentStageName', 'status', 'approvalStatus', 'shortages', 'remarks'
 ]);
 const PRODUCTION_STAGES = [
+  'PLANNING', 'CUTTING', 'FABRICATION', 'GRINDING',
+  'PRE-COATING', 'POWDER COATING', 'READY FOR DISPATCH'
+];
+const LEGACY_PRODUCTION_STAGES = [
   'PLANNING', 'MRN - STORES', 'CUTTING', 'FABRICATION', 'GRINDING',
   'PRE-COATING', 'POWDER COATING', 'ASSEMBLY', 'READY FOR DISPATCH'
 ];
+const LEGACY_STAGE_FALLBACKS = Object.freeze({
+  'MRN - STORES': 'PLANNING',
+  'ASSEMBLY': 'POWDER COATING',
+});
 const ITEM_STATUS_VALUES = new Set(['In Progress', 'Delayed', 'On Hold', 'Completed']);
 
 class HttpError extends Error {
@@ -57,12 +67,17 @@ async function readJson(res) {
 }
 
 function adminHeaders(secretKey, extra = {}) {
-  return {
+  const headers = {
     apikey: secretKey,
-    Authorization: `Bearer ${secretKey}`,
     'Content-Type': 'application/json',
     ...extra,
   };
+  // Current sb_secret_* keys are opaque API keys and must not be used as JWTs.
+  // Legacy service_role JWTs continue to use the Authorization header.
+  if (!String(secretKey || '').startsWith('sb_secret_')) {
+    headers.Authorization = `Bearer ${secretKey}`;
+  }
+  return headers;
 }
 
 const TRANSIENT_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
@@ -160,6 +175,64 @@ function validatePayload(payload, recordId) {
   return { ...payload, id: recordId };
 }
 
+function normalizeStageName(stageName, stageIndex, assumeLegacyIndex = false) {
+  const rawName = String(stageName || '').trim().toUpperCase().replace(/\s*-\s*/g, ' - ').replace(/\s+/g, ' ');
+  const compact = rawName.replace(/[\s-]/g, '');
+  const retained = PRODUCTION_STAGES.find(name => name.replace(/[\s-]/g, '') === compact);
+  if (retained) return retained;
+  const legacy = LEGACY_PRODUCTION_STAGES.find(name => name.replace(/[\s-]/g, '') === compact);
+  if (legacy) return LEGACY_STAGE_FALLBACKS[legacy] || legacy;
+  const numeric = Number(stageIndex);
+  if (Number.isInteger(numeric)) {
+    if (!assumeLegacyIndex && numeric >= 0 && numeric < PRODUCTION_STAGES.length) return PRODUCTION_STAGES[numeric];
+    if (numeric >= 0 && numeric < LEGACY_PRODUCTION_STAGES.length) {
+      const oldName = LEGACY_PRODUCTION_STAGES[numeric];
+      return LEGACY_STAGE_FALLBACKS[oldName] || oldName;
+    }
+  }
+  return PRODUCTION_STAGES[0];
+}
+
+function canonicalSection(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  return SECTIONS.find(section => section.toLowerCase() === raw) || '';
+}
+
+function normalizeProductionItemPayload(payload, recordId, assumeLegacyIndex = false) {
+  const normalized = validatePayload(payload, recordId);
+  const stageName = normalizeStageName(normalized.currentStageName, normalized.currentStage, assumeLegacyIndex || !normalized.currentStageName);
+  normalized.currentStage = PRODUCTION_STAGES.indexOf(stageName);
+  normalized.currentStageName = stageName;
+  const requiredQuantity = Number(normalized.quantity || 0);
+  const dispatchQuantity = Number(normalized.dispatchQuantity || 0);
+  normalized.uom = String(normalized.uom || 'Nos.').trim() || 'Nos.';
+  normalized.projectLineItemId = String(normalized.projectLineItemId || '').trim();
+  normalized.section = canonicalSection(normalized.section);
+  normalized.assignedExecutiveId = String(normalized.assignedExecutiveId || '').trim();
+  normalized.assignedBy = String(normalized.assignedBy || '').trim();
+  normalized.assignedAt = String(normalized.assignedAt || '').trim();
+  if (!Number.isFinite(requiredQuantity) || requiredQuantity < 0) throw new Error('Production item quantity must be a valid non-negative number.');
+  if (!Number.isFinite(dispatchQuantity) || dispatchQuantity < 0) throw new Error('Dispatch Quantity must be a valid non-negative number.');
+  if (requiredQuantity > 0 && dispatchQuantity > requiredQuantity) throw new Error('Dispatch Quantity cannot exceed Required Quantity.');
+  normalized.quantity = requiredQuantity;
+  normalized.dispatchQuantity = dispatchQuantity;
+  normalized.pendingQuantity = Math.max(0, requiredQuantity - dispatchQuantity);
+  if (Array.isArray(normalized.history)) {
+    normalized.history = normalized.history.map(event => {
+      if (!event || typeof event !== 'object') return event;
+      const eventStageName = normalizeStageName(event.stageName, event.stageIndex, assumeLegacyIndex || !event.stageName);
+      return { ...event, stageIndex: PRODUCTION_STAGES.indexOf(eventStageName), stageName: eventStageName };
+    });
+  }
+  return normalized;
+}
+
+function normalizeEntityPayload(entity, payload, recordId, assumeLegacyIndex = false) {
+  return entity === 'items'
+    ? normalizeProductionItemPayload(payload, recordId, assumeLegacyIndex)
+    : validatePayload(payload, recordId);
+}
+
 function cleanRequestId(value, prefix = 'REQ') {
   const requestId = String(value || '').trim() || `${prefix}-${crypto.randomUUID()}`;
   if (!/^[A-Za-z0-9_.:-]{8,160}$/.test(requestId)) throw new HttpError(400, 'Request ID is invalid.');
@@ -186,7 +259,7 @@ function normalizeChanges(rawChanges = {}) {
         total += 1;
         return {
           recordId,
-          payload: validatePayload(source, recordId),
+          payload: normalizeEntityPayload(entity, source, recordId),
           expectedVersion: cleanExpectedVersion(entry?.expectedVersion),
         };
       }),
@@ -349,7 +422,7 @@ async function updateItemWorkflow(url, secretKey, caller, body) {
 
   const patch = normalizeWorkflowPatch(body.patch, caller.role);
   const now = new Date().toISOString();
-  const basePayload = validatePayload(row.payload, itemId);
+  const basePayload = normalizeProductionItemPayload(row.payload, itemId, true);
   const provisional = { ...basePayload, ...patch, id: itemId };
   const events = normalizeWorkflowHistory(body.historyEvents, caller, provisional, now);
   const nextPayload = validatePayload({
@@ -395,7 +468,8 @@ async function updateItemWorkflow(url, secretKey, caller, body) {
 async function assertExecutiveItemUpdates(url, secretKey, caller, changes) {
   if (caller.role !== 'EXECUTIVE') return;
   for (const record of changes.items?.upsert || []) {
-    const existing = await getExistingRecord(url, secretKey, 'items', record.recordId);
+    const rawExisting = await getExistingRecord(url, secretKey, 'items', record.recordId);
+    const existing = rawExisting ? normalizeProductionItemPayload(rawExisting, record.recordId, true) : null;
 
     // Executives may create production items, but only with the recognised production-item fields.
     if (!existing) {
@@ -404,8 +478,10 @@ async function assertExecutiveItemUpdates(url, secretKey, caller, changes) {
       }
       if (!String(record.payload.projectId || '').trim()) throw new Error('A production item must belong to a project.');
       if (!String(record.payload.itemName || '').trim()) throw new Error('Production item name is required.');
+      if (!canonicalSection(record.payload.section)) throw new Error('Production item Section is required.');
+      if (String(record.payload.assignedExecutiveId || '') !== String(caller.user.id)) throw new Error('Executives may create only production items assigned to their own account.');
       const stage = Number(record.payload.currentStage);
-      if (!Number.isInteger(stage) || stage < 0 || stage > 8) throw new Error('Production item stage is invalid.');
+      if (!Number.isInteger(stage) || stage < 0 || stage >= PRODUCTION_STAGES.length) throw new Error('Production item stage is invalid.');
       continue;
     }
 
@@ -472,7 +548,7 @@ function normalizeSeedRecords(records = []) {
     if (!ENTITY_TYPES.has(entity)) throw new Error(`Unsupported ERP entity: ${entity}`);
     const recordId = cleanRecordId(record?.recordId || record?.payload?.id);
     changes[entity] ||= { upsert: [], delete: [] };
-    changes[entity].upsert.push({ recordId, payload: validatePayload(record.payload, recordId) });
+    changes[entity].upsert.push({ recordId, payload: normalizeEntityPayload(entity, record.payload, recordId, true) });
   }
   return changes;
 }
@@ -498,7 +574,7 @@ function normalizeBulkImportRecords(records = []) {
     return {
       entityType,
       recordId,
-      payload: validatePayload(record?.payload, recordId),
+      payload: normalizeEntityPayload(entityType, record?.payload, recordId, true),
       sourceRow: Number.isFinite(sourceRowValue) && sourceRowValue > 0 ? Math.trunc(sourceRowValue) : null,
     };
   });

@@ -36,17 +36,23 @@ async function fetchWithPolicy(resource, options = {}, { retries = 2, timeoutMs 
   throw new Error(lastError?.message || 'Supabase configuration check failed.');
 }
 
+function adminHeaders(secretKey, extra = {}) {
+  const headers = { apikey: secretKey, ...extra };
+  // Current sb_secret_* keys are opaque API keys and must not be used as JWTs.
+  // Legacy service_role JWTs continue to use the Authorization header.
+  if (!String(secretKey || '').startsWith('sb_secret_')) {
+    headers.Authorization = `Bearer ${secretKey}`;
+  }
+  return headers;
+}
+
 async function tableAvailable(url, secretKey, table, selectColumn) {
   const response = await fetchWithPolicy(`${url}/rest/v1/${table}?select=${selectColumn}&limit=1`, {
-    headers: {
-      apikey: secretKey,
-      Authorization: `Bearer ${secretKey}`,
-      Accept: 'application/json',
-    },
+    headers: adminHeaders(secretKey, { Accept: 'application/json' }),
   });
   if (response.ok) return { available: true, rows: await response.json() };
   const text = await response.text();
-  if (response.status === 404 || /does not exist|schema cache/i.test(text)) return { available: false, rows: [] };
+  if ([400, 404].includes(response.status) && /does not exist|schema cache|column .* not found/i.test(text)) return { available: false, rows: [] };
   throw new Error(`Unable to read ${table} (${response.status}): ${text.slice(0, 180)}`);
 }
 
@@ -61,10 +67,11 @@ export default async () => {
       }), { status: 500, headers: JSON_HEADERS });
     }
 
-    const [profiles, records, mutationLog] = await Promise.all([
+    const [profiles, records, mutationLog, projectLineItems] = await Promise.all([
       tableAvailable(supabaseUrl, secretKey, 'profiles', 'id'),
       tableAvailable(supabaseUrl, secretKey, 'erp_records', 'record_id'),
       tableAvailable(supabaseUrl, secretKey, 'erp_mutation_log', 'request_id'),
+      tableAvailable(supabaseUrl, secretKey, 'project_line_items', 'id,uom,section,assigned_executive_id'),
     ]);
 
     return new Response(JSON.stringify({
@@ -76,9 +83,12 @@ export default async () => {
       realtimeMode: 'incremental-postgres-changes',
       sharedDataReady: records.available,
       stabilityMigrationReady: mutationLog.available,
-      applicationVersion: '11.0.0',
-      productionItemPermissions: 'admin-manager-full-executive-create-and-stage-update',
-      productionStageSync: 'database-confirmed-atomic-idempotent-realtime',
+      lineItemProductionSyncReady: projectLineItems.available,
+      sectionAssignmentReady: projectLineItems.available,
+      sectionAssignmentMode: 'bulk-section-to-executive-single-source',
+      applicationVersion: '11.3.0',
+      procurementItemPermissions: 'admin-manager-full-executive-create-and-stage-update',
+      procurementStageSync: 'database-confirmed-atomic-idempotent-realtime',
       bulkUploadMode: 'validated-atomic-supabase-import',
       architectureMode: 'single-source-atomic-resilient',
     }), { status: 200, headers: JSON_HEADERS });

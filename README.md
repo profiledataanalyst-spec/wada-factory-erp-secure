@@ -1,15 +1,32 @@
-# Profile Solutions Factory ERP
+# Profile Solutions Procurement ERP v11.3.0
 
-Version 11.0 is the stability and architecture audit release of the shared multi-user ERP.
+This release preserves the current ERP and adds the approved **Section Assignment & Dashboard Integration** for Aluminium, Store, Fabrication and Outsource. See `SECTION_ASSIGNMENT_IMPLEMENTATION.md` and `REDEPLOY_V11.3.0.md`.
+
+# Profile Solutions Procurement ERP
+
+Version **11.1.0** is a minimal in-place conversion of the existing ERP source application.
+
+## What changed
+
+- User-facing application name changed to **Profile Solutions Procurement ERP**.
+- Existing UI, navigation, roles, authentication, database, APIs and features are retained.
+- The tracker now uses seven stages:
+  1. Planning
+  2. Cutting
+  3. Fabrication
+  4. Grinding
+  5. Pre-Coating
+  6. Powder Coating
+  7. Ready for Dispatch
+- Existing records using removed historical stages are safely aligned through `supabase/005_procurement_stage_alignment.sql`.
 
 ## Runtime architecture
 
 - Static HTML/CSS/JavaScript frontend
-- Supabase Authentication
-- Supabase PostgreSQL shared operational records
-- Supabase Realtime incremental synchronization
-- Netlify Functions for protected role-checked mutations
-- Atomic/idempotent mutation RPC installed by migration 004
+- Supabase Authentication and PostgreSQL
+- Supabase Realtime
+- Protected Netlify Functions
+- Atomic/idempotent mutation RPC from migration 004
 
 ## Validate
 
@@ -19,8 +36,8 @@ npm run audit
 
 ## Deploy
 
-Follow `STABILITY_DEPLOYMENT.md`. Migration `supabase/004_stability_performance.sql` must be run before the Version 11 frontend is used.
+Follow `REDEPLOY_PROCUREMENT_ERP.md`.
 
 ## Security
 
-Never place `SUPABASE_SECRET_KEY` in browser code or commit it to GitHub. It belongs only in protected hosting environment variables.
+Keep `SUPABASE_SECRET_KEY` only in protected Netlify Function environment variables. Never place it in browser code or a public repository.

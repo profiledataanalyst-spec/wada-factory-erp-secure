@@ -1,12 +1,14 @@
 {
-  "name": "profile-solutions-factory-erp",
-  "version": "11.0.0",
+  "name": "profile-solutions-procurement-erp",
+  "version": "11.3.0",
   "private": true,
-  "description": "Profile Solutions Factory ERP stability release with atomic idempotent Supabase mutations, serialized authentication startup, incremental Realtime synchronization, controlled retries and production diagnostics",
+  "description": "Profile Solutions Procurement ERP with Section-based bulk upload, assignment, executive visibility and dashboard integration",
   "scripts": {
     "check": "node scripts/check.mjs",
     "test:stability": "node scripts/stability-tests.mjs",
-    "audit": "node scripts/audit.mjs"
+    "audit": "node scripts/audit.mjs",
+    "test:item-sync": "node scripts/project-items-sync-tests.mjs",
+    "test:section": "node scripts/section-assignment-tests.mjs"
   },
   "engines": {
     "node": ">=20"
