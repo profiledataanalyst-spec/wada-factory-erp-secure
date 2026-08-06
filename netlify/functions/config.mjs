@@ -76,7 +76,7 @@ export default async () => {
       realtimeMode: 'incremental-postgres-changes',
       sharedDataReady: records.available,
       stabilityMigrationReady: mutationLog.available,
-      applicationVersion: '11.1.0',
+      applicationVersion: '11.1.1',
       productionItemPermissions: 'admin-manager-section-assignment-executive-assigned-items-only',
       productionStageSync: 'database-confirmed-atomic-idempotent-realtime',
       bulkUploadMode: 'validated-section-aware-atomic-supabase-import',

@@ -1,13 +1,13 @@
-# Netlify Deployment — Profile Solutions Factory ERP v11.1
+# Netlify Deployment — Profile Solutions ERP Version 9
 
-## Existing Factory ERP site
+## Existing wada-factory-erp site
 
-Follow `SECTION_FEATURE_DEPLOYMENT.md`. The Section release requires `supabase/005_section_task_assignment.sql` before the updated frontend is used.
+Follow `SHARED_DATA_DEPLOYMENT.md`. Version 9 requires the new Supabase migration before the updated site is used.
 
 ## New deployment
 
 1. Create a Supabase project.
-2. Run all SQL files in `supabase/` in numerical order, including migration 005.
+2. Run the three SQL files in `supabase/` in numerical order.
 3. Create a private GitHub repository and upload this package.
 4. Import the repository into Netlify.
 5. Use:
@@ -38,10 +38,9 @@ authenticationMode: temporary-password
 dataStorage: supabase-postgresql
 realtimeMode: postgres-changes
 sharedDataReady: true
-applicationVersion: 11.1.0
 ```
 
 9. Open the ERP and create the first Super Admin.
-10. Complete the post-deployment checks in `SECTION_FEATURE_DEPLOYMENT.md`.
+10. Test one project across two different browser sessions.
 
-Custom SMTP, `APP_URL`, invitation email templates, and invite-expiry variables are not required.
+Custom SMTP, `APP_URL`, invitation email templates and invite-expiry variables are not required.

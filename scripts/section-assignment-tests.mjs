@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 
 const originalFetch = globalThis.fetch;
 const originalConsoleError = console.error;
@@ -91,7 +92,14 @@ try {
   assert.equal(validImport.status, 200);
   assert.equal(lastRpcBody.p_changes.items.upsert[0].payload.section, 'Aluminium', 'Section should be stored using the canonical database value.');
 
-  console.log('Section assignment tests passed: invalid values rejected, canonical Section stored, and Executives are blocked from other users\' tasks.');
+
+  const clientSource = await readFile(new URL('../js/app.js', import.meta.url), 'utf8');
+  assert.match(clientSource, /Items with no Section \(set Section and assign\)/, 'Legacy items without Section must have an explicit recovery assignment scope.');
+  assert.match(clientSource, /matchingAssignmentTargets/, 'Section assignment must calculate matching items before saving.');
+  assert.doesNotMatch(clientSource, /id=\"add-item\"/, 'The manual Add Item button must not be rendered.');
+  assert.doesNotMatch(clientSource, /document\.getElementById\('add-item'\)/, 'The removed Add Item control must not be bound.');
+
+  console.log('Section assignment tests passed: invalid values rejected, canonical Section stored, legacy unsectioned tasks can be recovered, Add Item is removed, and Executives are blocked from other users\' tasks.');
 } finally {
   globalThis.fetch = originalFetch;
   console.error = originalConsoleError;

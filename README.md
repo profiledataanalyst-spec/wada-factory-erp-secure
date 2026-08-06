@@ -1,16 +1,6 @@
 # Profile Solutions Factory ERP
 
-Version 11.1 adds Section-based production assignment to the existing stable Factory ERP without redesigning or replacing its existing workflows.
-
-## Section release scope
-
-- Bulk upload and manual production items support `Section`.
-- Allowed values: `Aluminium`, `Store`, `Fabrication`, `Outsource`.
-- Super Admins and Managers can assign individual items or matching Section batches to active Executives.
-- Executives see and update only production items assigned to their account.
-- Factory Dashboard includes a live Section Overview.
-- Section is available in Production Tracker, Operations, project details, shortages, reports, Excel/CSV exports, search, and filters.
-- Existing records and old upload files without Section remain supported as `Not Specified`.
+Version 11.1.1 is the Section-assignment hotfix release of the shared multi-user Factory ERP.
 
 ## Runtime architecture
 
@@ -20,19 +10,16 @@ Version 11.1 adds Section-based production assignment to the existing stable Fac
 - Supabase Realtime incremental synchronization
 - Netlify Functions for protected role-checked mutations
 - Atomic/idempotent mutation RPC installed by migration 004
-- Section validation, assignment indexes, and Executive row visibility installed by migration 005
 
 ## Validate
 
 ```cmd
-npm run check
-npm run test:stability
-npm run test:section
+npm run audit
 ```
 
 ## Deploy
 
-Follow `SECTION_FEATURE_DEPLOYMENT.md`. Run migrations through `supabase/005_section_task_assignment.sql` before using the Version 11.1 frontend.
+Follow `SECTION_FEATURE_DEPLOYMENT.md`. Migrations 001–005 must be installed before the v11.1.1 frontend is used. Existing v11.1 deployments do not require another SQL migration for this hotfix.
 
 ## Security
 

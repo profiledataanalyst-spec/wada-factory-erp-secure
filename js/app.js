@@ -110,7 +110,7 @@
     { id: 'settings', label: 'Settings & Backup', icon: ICONS.settings, roles: ['ADMIN'], section: 'Administration' }
   ];
 
-  const APP_VERSION = '11.1.0';
+  const APP_VERSION = '11.1.1';
   const API_TIMEOUT_MS = 22000;
   const SESSION_REFRESH_WINDOW_SECONDS = 90;
   const TRANSIENT_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
@@ -1811,49 +1811,57 @@
     setPageTitle('Production Tracker','Nine-stage manufacturing workflow');
     const items=visibleItems(),projects=assignedProjects();
     const page=document.getElementById('page-content');
-    page.innerHTML=`${pageToolbar('Production Progress Tracker','Track every item from planning to ready for dispatch.',`${canAssignTasks()?'<button class="btn btn-secondary" id="assign-by-section">Assign by Section</button>':''}<button class="btn btn-primary" id="add-item">+ Add Item</button>`)}
+    page.innerHTML=`${pageToolbar('Production Progress Tracker','Track every item from planning to ready for dispatch.',canAssignTasks()?'<button class="btn btn-secondary" id="assign-by-section">Assign Section Work</button>':'')}
       <div class="filter-bar"><div class="filter-item search-wide"><input id="item-search" placeholder="Search item, section, executive, BOM or job number"></div><div class="filter-item"><select id="item-project"><option value="">All projects</option>${projects.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></div><div class="filter-item"><select id="item-section"><option value="">All sections</option>${SECTIONS.map(section=>`<option>${esc(section)}</option>`).join('')}<option value="Not Specified">Not Specified</option></select></div><div class="filter-item"><select id="item-stage"><option value="">All stages</option>${STAGES.map((s,i)=>`<option value="${i}">${esc(s)}</option>`).join('')}</select></div><div class="filter-item"><select id="item-status"><option value="">All statuses</option><option>Pending Assignment</option><option>In Progress</option><option>Awaiting Approval</option><option>Delayed</option><option>Completed</option><option>On Hold</option></select></div></div>
       <section class="card table-card"><div class="table-wrap"><table><thead><tr><th>Item</th><th>Project</th><th>Section</th><th>BOM / Job</th><th>Qty</th><th>Assigned To</th><th>Due / Priority</th><th>Current Stage</th><th>Progress</th><th>Status</th><th>Action</th></tr></thead><tbody id="items-body"></tbody></table></div><div class="table-footer"><span id="items-count"></span><span>Open an item to view its complete timeline</span></div></section>`;
     const draw=()=>{
       const q=document.getElementById('item-search').value.toLowerCase(),pid=document.getElementById('item-project').value,section=document.getElementById('item-section').value,stage=document.getElementById('item-stage').value,status=document.getElementById('item-status').value;
       const rows=items.filter(i=>(!q||[i.itemName,i.bomNumber,i.jobNumber,i.section,assignedExecutive(i)?.name].some(v=>String(v||'').toLowerCase().includes(q)))&&(!pid||i.projectId===pid)&&(!section||(section==='Not Specified'?!canonicalSection(i.section):canonicalSection(i.section)===section))&&(!stage||String(i.currentStage)===stage)&&(!status||taskStatus(i)===status));
       document.getElementById('items-count').textContent=`${rows.length} item(s)`;
-      document.getElementById('items-body').innerHTML=rows.length?rows.map(i=>`<tr><td><strong>${esc(i.itemName)}</strong><div class="small muted">${esc(i.size||i.site||'')}</div></td><td>${esc(projectById(i.projectId)?.name||'Unknown')}</td><td>${statusChip(itemSection(i))}</td><td>${esc(i.bomNumber||'—')}<div class="small muted">${esc(i.jobNumber||'—')}</div></td><td>${fmtNumber(i.quantity)}${i.quantityVerified?'':' <span title="Unverified">⚠</span>'}</td><td>${esc(assignedExecutive(i)?.name||'Unassigned')}<div class="small muted">${i.assignedAt?fmtDate(i.assignedAt):''}</div></td><td>${fmtDate(taskDueDate(i))}<div class="small muted">${esc(taskPriority(i))}</div></td><td>${canUpdateItemStage(i)?`<select class="table-stage-select" data-stage-item="${i.id}" aria-label="Update current stage for ${esc(i.itemName)}">${STAGES.map((s,idx)=>`<option value="${idx}" ${Number(i.currentStage)===idx?'selected':''}>${esc(s)}</option>`).join('')}</select>`:esc(STAGES[i.currentStage]||'PLANNING')}</td><td style="min-width:140px"><div class="progress-line"><span style="width:${completionPercent(i)}%"></span></div><div class="progress-meta"><span>${completionPercent(i)}%</span><span>${i.approvalStatus==='SUBMITTED'?'Awaiting approval':''}</span></div></td><td>${statusChip(taskStatus(i))}</td><td><div class="table-actions"><button class="btn btn-secondary btn-sm" data-view-item="${i.id}">Open</button>${canAssignTasks()?`<button class="btn btn-ghost btn-sm" data-assign-item="${i.id}">${i.assignedExecutiveId?'Reassign':'Assign'}</button>`:''}</div></td></tr>`).join(''):`<tr><td colspan="11">${emptyState('⚙','No production items','Import Excel data or add an item manually.')}</td></tr>`;
+      document.getElementById('items-body').innerHTML=rows.length?rows.map(i=>`<tr><td><strong>${esc(i.itemName)}</strong><div class="small muted">${esc(i.size||i.site||'')}</div></td><td>${esc(projectById(i.projectId)?.name||'Unknown')}</td><td>${statusChip(itemSection(i))}</td><td>${esc(i.bomNumber||'—')}<div class="small muted">${esc(i.jobNumber||'—')}</div></td><td>${fmtNumber(i.quantity)}${i.quantityVerified?'':' <span title="Unverified">⚠</span>'}</td><td>${esc(assignedExecutive(i)?.name||'Unassigned')}<div class="small muted">${i.assignedAt?fmtDate(i.assignedAt):''}</div></td><td>${fmtDate(taskDueDate(i))}<div class="small muted">${esc(taskPriority(i))}</div></td><td>${canUpdateItemStage(i)?`<select class="table-stage-select" data-stage-item="${i.id}" aria-label="Update current stage for ${esc(i.itemName)}">${STAGES.map((s,idx)=>`<option value="${idx}" ${Number(i.currentStage)===idx?'selected':''}>${esc(s)}</option>`).join('')}</select>`:esc(STAGES[i.currentStage]||'PLANNING')}</td><td style="min-width:140px"><div class="progress-line"><span style="width:${completionPercent(i)}%"></span></div><div class="progress-meta"><span>${completionPercent(i)}%</span><span>${i.approvalStatus==='SUBMITTED'?'Awaiting approval':''}</span></div></td><td>${statusChip(taskStatus(i))}</td><td><div class="table-actions"><button class="btn btn-secondary btn-sm" data-view-item="${i.id}">Open</button>${canAssignTasks()?`<button class="btn btn-ghost btn-sm" data-assign-item="${i.id}">${i.assignedExecutiveId?'Reassign':'Assign'}</button>`:''}</div></td></tr>`).join(''):`<tr><td colspan="11">${emptyState('⚙','No production items','Import Excel data to load production items.')}</td></tr>`;
       document.querySelectorAll('[data-view-item]').forEach(button=>button.onclick=()=>openItemDetail(button.dataset.viewItem));
       document.querySelectorAll('[data-stage-item]').forEach(select=>select.onchange=()=>updateItemStageDirect(select.dataset.stageItem,select.value,select));
       document.querySelectorAll('[data-assign-item]').forEach(button=>button.onclick=()=>openTaskAssignment(button.dataset.assignItem));
     };
     draw();['item-search','item-project','item-section','item-stage','item-status'].forEach(id=>document.getElementById(id).addEventListener(id==='item-search'?'input':'change',draw));
-    document.getElementById('add-item').onclick=()=>openItemForm();
     if(document.getElementById('assign-by-section'))document.getElementById('assign-by-section').onclick=()=>openTaskAssignment();
   }
 
   function openItemForm(item=null) {
-    if(item){if(!requireRole('ADMIN','MANAGER'))return;}else if(!requireRole('ADMIN','MANAGER','EXECUTIVE'))return;
-    if(item&&!visibleItems().some(x=>x.id===item.id))return toast('Access denied','This production item is not assigned to your account.','error');
+    if(!item)return toast('Use Excel Import','New production items must be added through the existing Excel Import workflow.','warning');
+    if(!requireRole('ADMIN','MANAGER'))return;
+    if(!visibleItems().some(x=>x.id===item.id))return toast('Access denied','This production item is not assigned to your account.','error');
     const projects=assignedProjects();
-    if(!projects.length)return toast('Create a project first','Production items must belong to a project.','warning');
-    openModal(item?'Edit Production Item':'Add Production Item',`<form id="item-form"><div class="form-grid"><div class="form-group"><label>Project *</label><select name="projectId" required>${projects.map(p=>`<option value="${p.id}" ${item?.projectId===p.id?'selected':''}>${esc(p.name)}</option>`).join('')}</select></div><div class="form-group"><label>Section</label><select name="section"><option value="">Not Specified</option>${SECTIONS.map(section=>`<option value="${section}" ${canonicalSection(item?.section)===section?'selected':''}>${esc(section)}</option>`).join('')}</select></div><div class="form-group"><label>Quantity</label><input name="quantity" type="number" min="0" step="any" value="${item?.quantity??0}"></div><div class="form-group" style="grid-column:1/-1"><label>Item name *</label><textarea name="itemName" required placeholder="Enter complete item description">${esc(item?.itemName||'')}</textarea></div><div class="form-group"><label>BOM number</label><input name="bomNumber" value="${esc(item?.bomNumber||'')}"></div><div class="form-group"><label>Job number</label><input name="jobNumber" value="${esc(item?.jobNumber||'')}"></div><div class="form-group"><label>Size</label><input name="size" value="${esc(item?.size||'')}"></div>${item?`<div class="form-group"><label>Current stage</label><input value="${esc(STAGES[item.currentStage])}" disabled><div class="help-text">Use the stage workflow controls to move this item.</div></div>`:`<div class="form-group"><label>Current stage</label><select name="currentStage">${STAGES.map((s,i)=>`<option value="${i}">${esc(s)}</option>`).join('')}</select></div>`}</div></form>`,`<button class="btn btn-secondary" data-close-modal>Cancel</button><button class="btn btn-primary" id="save-item">${item?'Save Changes':'Add Item'}</button>`);
+    if(!projects.length)return toast('Project unavailable','The production item project is not available.','warning');
+    openModal('Edit Production Item',`<form id="item-form"><div class="form-grid"><div class="form-group"><label>Project *</label><select name="projectId" required>${projects.map(p=>`<option value="${p.id}" ${item.projectId===p.id?'selected':''}>${esc(p.name)}</option>`).join('')}</select></div><div class="form-group"><label>Section</label><select name="section"><option value="">Not Specified</option>${SECTIONS.map(section=>`<option value="${section}" ${canonicalSection(item.section)===section?'selected':''}>${esc(section)}</option>`).join('')}</select></div><div class="form-group"><label>Quantity</label><input name="quantity" type="number" min="0" step="any" value="${item.quantity??0}"></div><div class="form-group" style="grid-column:1/-1"><label>Item name *</label><textarea name="itemName" required placeholder="Enter complete item description">${esc(item.itemName||'')}</textarea></div><div class="form-group"><label>BOM number</label><input name="bomNumber" value="${esc(item.bomNumber||'')}"></div><div class="form-group"><label>Job number</label><input name="jobNumber" value="${esc(item.jobNumber||'')}"></div><div class="form-group"><label>Size</label><input name="size" value="${esc(item.size||'')}"></div><div class="form-group"><label>Current stage</label><input value="${esc(STAGES[item.currentStage])}" disabled><div class="help-text">Use the stage workflow controls to move this item.</div></div></div></form>`,`<button class="btn btn-secondary" data-close-modal>Cancel</button><button class="btn btn-primary" id="save-item">Save Changes</button>`);
     document.getElementById('save-item').onclick=async event=>{
-      const f=document.getElementById('item-form');if(!f.reportValidity())return;
-      const fd=new FormData(f),p=projectById(String(fd.get('projectId')));if(!p)return toast('Project unavailable','Reload the data and try again.','error');
-      await withOperationalMutationLock(`item-save:${item?.id||String(fd.get('itemName')).trim()}`,event.currentTarget,async()=>{
-        setFormBusy(f,true);
+      const form=document.getElementById('item-form');if(!form.reportValidity())return;
+      const fd=new FormData(form),project=projectById(String(fd.get('projectId')));if(!project)return toast('Project unavailable','Reload the data and try again.','error');
+      await withOperationalMutationLock(`item-save:${item.id}`,event.currentTarget,async()=>{
+        setFormBusy(form,true);
         try{
-          if(item){
-            Object.assign(item,{projectId:p.id,itemName:String(fd.get('itemName')).trim(),rawItemName:String(fd.get('itemName')).trim(),section:canonicalSection(fd.get('section')),site:p.site,size:String(fd.get('size')||''),quantity:number(fd.get('quantity')),quantityVerified:true,bomNumber:String(fd.get('bomNumber')||''),jobNumber:String(fd.get('jobNumber')||p.jobNumber||''),updatedAt:nowISO()});
-            item.history=item.history||[];item.history.push(historyEvent(item,'Item Details Updated',item.status,'Production item master details updated.'));
-            audit('UPDATE','Production',`Updated production item ${item.itemName}`,item.id);
-          }else{
-            const idx=Number(fd.get('currentStage')),creator=getCurrentUser(),selfAssigned=creator.role==='EXECUTIVE';const i={id:uid('ITM'),projectId:p.id,itemName:String(fd.get('itemName')).trim(),rawItemName:String(fd.get('itemName')).trim(),section:canonicalSection(fd.get('section')),site:p.site,size:String(fd.get('size')||''),quantity:number(fd.get('quantity')),quantityVerified:true,bomNumber:String(fd.get('bomNumber')||''),jobNumber:String(fd.get('jobNumber')||p.jobNumber||''),assignedExecutiveId:selfAssigned?creator.id:'',assignedExecutiveName:selfAssigned?creator.name:'',assignedById:selfAssigned?creator.id:'',assignedByName:selfAssigned?creator.name:'',assignedAt:selfAssigned?nowISO():'',dueDate:p.targetDate||'',priority:p.priority||'Medium',currentStage:idx,currentStageName:STAGES[idx],status:'In Progress',approvalStatus:'',shortages:'',remarks:'',createdAt:nowISO(),updatedAt:nowISO(),history:[{id:uid('HIS'),stageIndex:idx,stageName:STAGES[idx],action:'Created',status:'In Progress',updatedBy:getCurrentUser().id,updatedByName:getCurrentUser().name,date:nowISO(),remarks:'Production item created manually.',attachments:[]}]};
-            state.items.push(i);audit('CREATE','Production',`Created production item ${i.itemName}`,i.id);
-          }
+          Object.assign(item,{projectId:project.id,itemName:String(fd.get('itemName')).trim(),rawItemName:String(fd.get('itemName')).trim(),section:canonicalSection(fd.get('section')),site:project.site,size:String(fd.get('size')||''),quantity:number(fd.get('quantity')),quantityVerified:true,bomNumber:String(fd.get('bomNumber')||''),jobNumber:String(fd.get('jobNumber')||project.jobNumber||''),updatedAt:nowISO()});
+          item.history=item.history||[];
+          item.history.push(historyEvent(item,'Item Details Updated',item.status,'Production item master details updated.'));
+          audit('UPDATE','Production',`Updated production item ${item.itemName}`,item.id);
           await saveState();
-          closeModal();renderProduction();toast(item?'Item updated':'Item created','Production item saved successfully.');
+          closeModal();renderProduction();toast('Item updated','Production item saved successfully.');
         }catch(error){toast('Production item save failed',error.message,'error');}
-        finally{setFormBusy(f,false);}
+        finally{setFormBusy(form,false);}
       });
     };
+  }
+
+  function matchingAssignmentTargets({ item = null, section = '', projectId = '', scope = 'unassigned' } = {}) {
+    if (item) return [item];
+    return visibleItems().filter(row => {
+      if (projectId && row.projectId !== projectId) return false;
+      const rowSection = canonicalSection(row.section);
+      if (scope === 'unsectioned') return !rowSection;
+      if (rowSection !== section) return false;
+      if (scope === 'unassigned') return !row.assignedExecutiveId;
+      return true;
+    });
   }
 
   function openTaskAssignment(itemId='') {
@@ -1865,22 +1873,48 @@
     const projects=assignedProjects();
     const selectedSection=canonicalSection(item?.section);
     openModal(item?'Assign Production Task':'Assign Tasks by Section',`<form id="assignment-form"><div class="form-grid">
-      ${item?`<div class="form-group" style="grid-column:1/-1"><label>Production item</label><input value="${esc(projectById(item.projectId)?.name||'')} — ${esc(item.itemName)}" disabled></div>`:`<div class="form-group"><label>Project</label><select name="projectId"><option value="">All projects</option>${projects.map(project=>`<option value="${project.id}">${esc(project.name)}</option>`).join('')}</select></div>`}
+      ${item?`<div class="form-group" style="grid-column:1/-1"><label>Production item</label><input value="${esc(projectById(item.projectId)?.name||'')} — ${esc(item.itemName)}" disabled></div>`:`<div class="form-group"><label>Project</label><select name="projectId"><option value="">All projects</option>${projects.map(project=>`<option value="${project.id}">${esc(project.name)}</option>`).join('')}</select><div class="help-text">Select a project when assigning legacy items that have no Section.</div></div>`}
       <div class="form-group"><label>Section *</label><select name="section" required><option value="">Select Section</option>${SECTIONS.map(section=>`<option value="${section}" ${selectedSection===section?'selected':''}>${esc(section)}</option>`).join('')}</select></div>
       <div class="form-group"><label>Assign to Executive *</label><select name="executiveId" ${item?'':'required'}>${item?'<option value="">Unassigned</option>':''}${executives.map(executive=>`<option value="${executive.id}" ${item?.assignedExecutiveId===executive.id?'selected':''}>${esc(executive.name)}</option>`).join('')}</select></div>
       <div class="form-group"><label>Due date</label><input name="dueDate" type="date" value="${item?taskDueDate(item):''}"></div>
       <div class="form-group"><label>Priority</label><select name="priority">${TASK_PRIORITIES.map(priority=>`<option ${taskPriority(item)===priority?'selected':''}>${priority}</option>`).join('')}</select></div>
-      ${item?'':`<div class="form-group"><label>Assignment scope</label><select name="scope"><option value="unassigned">Only unassigned items</option><option value="all">All matching items (reassign)</option></select></div>`}
-    </div><div class="info-banner"><div>↗</div><div><strong>Section-based assignment</strong><p>${item?'This item will be assigned or reassigned using its Section.':'Every matching production item will use the selected Section, Executive, due date and priority.'}</p></div></div></form>`,`<button class="btn btn-secondary" data-close-modal>Cancel</button><button class="btn btn-primary" id="save-assignment">${item?'Save Assignment':'Assign Matching Tasks'}</button>`);
-    document.getElementById('save-assignment').onclick=async event=>{
-      const form=document.getElementById('assignment-form');if(!form.reportValidity())return;
+      ${item?'':`<div class="form-group"><label>Assignment scope</label><select name="scope"><option value="unassigned">Only unassigned tasks in selected Section</option><option value="all">All tasks in selected Section (reassign)</option><option value="unsectioned">Items with no Section (set Section and assign)</option></select></div>`}
+    </div><div class="info-banner"><div>↗</div><div><strong>Section-based assignment</strong><p id="assignment-preview">${item?'Select the Section and Executive for this production item.':'Select a Section to preview matching production items.'}</p></div></div></form>`,`<button class="btn btn-secondary" data-close-modal>Cancel</button><button class="btn btn-primary" id="save-assignment">${item?'Save Assignment':'Assign Matching Tasks'}</button>`);
+    const form=document.getElementById('assignment-form'),saveButton=document.getElementById('save-assignment'),preview=document.getElementById('assignment-preview');
+    const updatePreview=()=>{
+      const fd=new FormData(form),section=canonicalSection(fd.get('section')),projectId=String(fd.get('projectId')||''),scope=String(fd.get('scope')||'unassigned'),executiveId=String(fd.get('executiveId')||'');
+      if(item){
+        preview.textContent=section?`This item will be tagged as ${section} and ${executiveId?'assigned to the selected Executive':'left unassigned'}.`:'Select a valid Section.';
+        saveButton.disabled=!section;
+        return;
+      }
+      if(!section){preview.textContent='Select a Section to preview matching production items.';saveButton.disabled=true;return;}
+      if(scope==='unsectioned'&&!projectId){preview.textContent='Select one project before assigning items that currently have no Section.';saveButton.disabled=true;return;}
+      const targets=matchingAssignmentTargets({section,projectId,scope});
+      const projectLabel=projectId?projectById(projectId)?.name||'selected project':'all projects';
+      if(!targets.length){
+        preview.textContent=scope==='unsectioned'?`No items without a Section were found in ${projectLabel}.`:`No ${section} production items match the selected scope in ${projectLabel}.`;
+        saveButton.disabled=true;
+        return;
+      }
+      preview.textContent=scope==='unsectioned'?`${targets.length} item(s) without a Section in ${projectLabel} will be tagged as ${section} and assigned.`:`${targets.length} ${section} production item(s) in ${projectLabel} will be assigned.`;
+      saveButton.disabled=!executiveId;
+    };
+    form.querySelectorAll('select,input').forEach(control=>control.addEventListener('change',updatePreview));
+    updatePreview();
+    saveButton.onclick=async event=>{
+      if(!form.reportValidity())return;
       const fd=new FormData(form),section=canonicalSection(fd.get('section')),executiveId=String(fd.get('executiveId')||''),executive=userById(executiveId),dueDate=String(fd.get('dueDate')||''),priority=String(fd.get('priority')||'Medium'),actor=getCurrentUser();
       if(!section)return toast('Invalid Section',`Select one of: ${SECTIONS.join(', ')}.`,'error');
       if(!item&&!executive)return toast('Executive required','Select an Executive for the section assignment.','error');
-      const projectId=String(fd.get('projectId')||''),scope=String(fd.get('scope')||'all');
-      const targets=item?[item]:visibleItems().filter(row=>canonicalSection(row.section)===section&&(!projectId||row.projectId===projectId)&&(scope!=='unassigned'||!row.assignedExecutiveId));
-      if(!targets.length)return toast('No matching tasks','No production items match the selected Section and scope.','warning');
-      await withOperationalMutationLock(`task-assignment:${item?.id||section}:${executiveId}`,event.currentTarget,async()=>{
+      const projectId=String(fd.get('projectId')||''),scope=String(fd.get('scope')||'unassigned');
+      if(!item&&scope==='unsectioned'&&!projectId)return toast('Project required','Select one project before assigning items that do not yet have a Section.','warning');
+      const targets=matchingAssignmentTargets({item,section,projectId,scope});
+      if(!targets.length){
+        const message=scope==='unsectioned'?'No items without a Section were found in the selected project.':'No production items match the selected Section and assignment scope. For legacy records, choose “Items with no Section”.';
+        return toast('No matching tasks',message,'warning');
+      }
+      await withOperationalMutationLock(`task-assignment:${item?.id||section}:${executiveId}:${projectId||'all'}:${scope}`,event.currentTarget,async()=>{
         setFormBusy(form,true);
         try{
           const assignedAt=nowISO();
@@ -1898,9 +1932,10 @@
             target.history.push(historyEvent(target,executiveId?'Task Assigned':'Task Unassigned',executiveId?'Assigned':'Unassigned',executiveId?`Assigned to ${executive.name} for ${section}. Due ${dueDate||'not specified'}; priority ${priority}.`:`Assignment removed by ${actor.name}.`));
           });
           if(executiveId)notify(executiveId,item?'Production task assigned':'Section work assigned',item?`${item.itemName} (${section}) has been assigned to you.`:`${targets.length} ${section} production task(s) have been assigned to you.`,'Assignment',item?.id||targets[0].id);
-          audit(executiveId?'ASSIGN':'UNASSIGN','Production',`${executiveId?'Assigned':'Unassigned'} ${targets.length} ${section} task(s)${executive?` to ${executive.name}`:''}`,item?.id||'');
+          audit(executiveId?'ASSIGN':'UNASSIGN','Production',`${executiveId?'Assigned':'Unassigned'} ${targets.length} ${section} task(s)${executive?` to ${executive.name}`:''}${scope==='unsectioned'?' and populated missing Section values':''}`,item?.id||'');
           await saveState();
-          closeModal();renderProduction();toast(executiveId?'Tasks assigned':'Task unassigned',`${targets.length} production item(s) updated successfully.`);
+          const updatedCount=targets.filter(target=>canonicalSection(target.section)===section&&target.assignedExecutiveId===executiveId).length;
+          closeModal();renderProduction();toast(executiveId?'Section work assigned':'Task unassigned',`${updatedCount} production item(s) assigned and synchronized successfully.`);
         }catch(error){toast('Task assignment failed',error.message,'error');}
         finally{setFormBusy(form,false);}
       });

@@ -33,7 +33,7 @@ if (!html.includes('@supabase/supabase-js@2.110.8')) fail('The Supabase browser 
 if (!html.includes('id="excel-file-input"') || !html.includes('id="backup-file-input"')) fail('Required hidden file inputs are missing.');
 if (!css.includes('Profile Solutions Enterprise UI') || !css.includes('.is-busy-control')) fail('Production UI stylesheet is incomplete.');
 
-if (!js.includes("const APP_VERSION = '11.1.0'")) fail('Client version 11.1.0 is missing.');
+if (!js.includes("const APP_VERSION = '11.1.1'")) fail('Client version 11.1.1 is missing.');
 if (!js.includes('prepareAuthenticatedSession') || !js.includes('ensureFreshSession')) fail('Resilient authentication/session startup is missing.');
 if (!js.includes('authenticatedStartupPromise') || (js.match(/onAuthStateChange/g) || []).length !== 1) fail('Authentication startup is duplicated or not serialized.');
 if (!js.includes('pendingRealtimePayloads') || !js.includes('drainRealtimePayloads')) fail('Incremental Realtime event queuing is missing.');
@@ -55,10 +55,12 @@ if (!migration.includes('create table if not exists public.erp_mutation_log')) f
 if (!migration.includes('create or replace function public.apply_erp_changes')) fail('Atomic mutation RPC migration is missing.');
 if (!migration.includes('pg_advisory_xact_lock') || !migration.includes('ERP_CONFLICT')) fail('Concurrency controls are missing from the migration.');
 if (!migration.includes('erp_records_notifications_user_read_idx')) fail('Targeted performance indexes are missing.');
-if (!configFn.includes("applicationVersion: '11.1.0'") || !configFn.includes('stabilityMigrationReady')) fail('Version 11.1 configuration readiness check is missing.');
+if (!configFn.includes("applicationVersion: '11.1.1'") || !configFn.includes('stabilityMigrationReady')) fail('Version 11.1 configuration readiness check is missing.');
 if (!sectionMigration.includes('trg_validate_erp_item_section_assignment') || !sectionMigration.includes('Role scoped ERP record access')) fail('Section assignment database migration is incomplete.');
-if (!js.includes('Assign by Section') || !js.includes('renderExecutiveDashboard') || !js.includes('Section Overview')) fail('Section assignment UI is incomplete.');
+if (!js.includes('Assign Section Work') || !js.includes('renderExecutiveDashboard') || !js.includes('Section Overview')) fail('Section assignment UI is incomplete.');
+if (!js.includes('Items with no Section (set Section and assign)') || !js.includes('matchingAssignmentTargets')) fail('Legacy unsectioned item assignment recovery is missing.');
+if (js.includes('id=\"add-item\"') || js.includes("document.getElementById('add-item')")) fail('Manual Add Item control is still present in Production Tracker.');
 if (!dataFn.includes('SECTION_VALUES') || !dataFn.includes('This production task is not assigned to your account')) fail('Section or assignment API validation is incomplete.');
 if (!netlify.includes('functions = "netlify/functions"') || !netlify.includes('Cache-Control')) fail('Netlify Function or cache configuration is incomplete.');
 
-console.log('Project check passed: Profile Solutions ERP v11.1 Section assignment, assigned-work Executive security, Section Overview, reporting integration, stability audit, atomic idempotent database writes, serialized session startup, incremental Realtime synchronization, controlled retries, shared Supabase data, existing permissions and UI are present.');
+console.log('Project check passed: Profile Solutions ERP v11.1.1 Section assignment hotfix, assigned-work Executive security, Section Overview, reporting integration, stability audit, atomic idempotent database writes, serialized session startup, incremental Realtime synchronization, controlled retries, shared Supabase data, existing permissions and UI are present.');
