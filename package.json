@@ -1,14 +1,15 @@
 {
   "name": "profile-solutions-procurement-erp",
-  "version": "11.3.0",
+  "version": "11.3.1",
   "private": true,
-  "description": "Profile Solutions Procurement ERP with Section-based bulk upload, assignment, executive visibility and dashboard integration",
+  "description": "Profile Solutions Factory ERP with erp_records-only Section bulk upload, assignment, executive visibility and dashboard integration",
   "scripts": {
     "check": "node scripts/check.mjs",
     "test:stability": "node scripts/stability-tests.mjs",
-    "audit": "node scripts/audit.mjs",
     "test:item-sync": "node scripts/project-items-sync-tests.mjs",
-    "test:section": "node scripts/section-assignment-tests.mjs"
+    "test:line-items": "node scripts/project-line-items-tests.mjs",
+    "test:section": "node scripts/section-assignment-tests.mjs",
+    "audit": "node scripts/audit.mjs"
   },
   "engines": {
     "node": ">=20"

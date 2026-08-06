@@ -9,8 +9,7 @@ function env(name, fallback = '') {
 }
 
 const TRANSIENT_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
-
-function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 async function fetchWithPolicy(resource, options = {}, { retries = 2, timeoutMs = 10000 } = {}) {
   let lastError;
@@ -38,22 +37,55 @@ async function fetchWithPolicy(resource, options = {}, { retries = 2, timeoutMs 
 
 function adminHeaders(secretKey, extra = {}) {
   const headers = { apikey: secretKey, ...extra };
-  // Current sb_secret_* keys are opaque API keys and must not be used as JWTs.
-  // Legacy service_role JWTs continue to use the Authorization header.
+  // Current sb_secret_* keys are opaque API keys and must not be sent as JWTs.
+  // Legacy service_role JWT keys continue to use the Authorization header.
   if (!String(secretKey || '').startsWith('sb_secret_')) {
     headers.Authorization = `Bearer ${secretKey}`;
   }
   return headers;
 }
 
+async function readJson(response) {
+  const text = await response.text();
+  if (!text) return null;
+  try { return JSON.parse(text); }
+  catch { return null; }
+}
+
 async function tableAvailable(url, secretKey, table, selectColumn) {
   const response = await fetchWithPolicy(`${url}/rest/v1/${table}?select=${selectColumn}&limit=1`, {
     headers: adminHeaders(secretKey, { Accept: 'application/json' }),
   });
-  if (response.ok) return { available: true, rows: await response.json() };
-  const text = await response.text();
-  if ([400, 404].includes(response.status) && /does not exist|schema cache|column .* not found/i.test(text)) return { available: false, rows: [] };
-  throw new Error(`Unable to read ${table} (${response.status}): ${text.slice(0, 180)}`);
+  const data = await readJson(response);
+  if (response.ok) return { available: true, rows: Array.isArray(data) ? data : [] };
+  const detail = JSON.stringify(data || {});
+  if ([400, 404].includes(response.status) && /does not exist|schema cache|column .* not found/i.test(detail)) {
+    return { available: false, rows: [] };
+  }
+  throw new Error(`Unable to read ${table} (${response.status}).`);
+}
+
+async function sectionStatus(url, secretKey) {
+  const response = await fetchWithPolicy(`${url}/rest/v1/rpc/section_assignment_status`, {
+    method: 'POST',
+    headers: adminHeaders(secretKey, {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    }),
+    body: '{}',
+  });
+  const data = await readJson(response);
+  if (response.ok && data && typeof data === 'object') return data;
+  const detail = JSON.stringify(data || {});
+  if ([400, 404].includes(response.status) && /does not exist|schema cache|section_assignment_status/i.test(detail)) {
+    return {
+      ready: false,
+      storage: 'erp_records',
+      mode: 'erp-records-section-to-executive-single-source',
+      allowedSections: ['Aluminium', 'Store', 'Fabrication', 'Outsource'],
+    };
+  }
+  throw new Error(`Unable to check Section Assignment migration (${response.status}).`);
 }
 
 export default async () => {
@@ -67,13 +99,14 @@ export default async () => {
       }), { status: 500, headers: JSON_HEADERS });
     }
 
-    const [profiles, records, mutationLog, projectLineItems] = await Promise.all([
+    const [profiles, records, mutationLog, sections] = await Promise.all([
       tableAvailable(supabaseUrl, secretKey, 'profiles', 'id'),
       tableAvailable(supabaseUrl, secretKey, 'erp_records', 'record_id'),
       tableAvailable(supabaseUrl, secretKey, 'erp_mutation_log', 'request_id'),
-      tableAvailable(supabaseUrl, secretKey, 'project_line_items', 'id,uom,section,assigned_executive_id'),
+      sectionStatus(supabaseUrl, secretKey),
     ]);
 
+    const sectionReady = Boolean(sections?.ready && records.available && mutationLog.available);
     return new Response(JSON.stringify({
       supabaseUrl,
       supabasePublishableKey: publishableKey,
@@ -83,10 +116,12 @@ export default async () => {
       realtimeMode: 'incremental-postgres-changes',
       sharedDataReady: records.available,
       stabilityMigrationReady: mutationLog.available,
-      lineItemProductionSyncReady: projectLineItems.available,
-      sectionAssignmentReady: projectLineItems.available,
-      sectionAssignmentMode: 'bulk-section-to-executive-single-source',
-      applicationVersion: '11.3.0',
+      lineItemProductionSyncReady: sectionReady,
+      sectionAssignmentReady: sectionReady,
+      sectionAssignmentMode: sections?.mode || 'erp-records-section-to-executive-single-source',
+      sectionStorage: sections?.storage || 'erp_records',
+      allowedSections: sections?.allowedSections || ['Aluminium', 'Store', 'Fabrication', 'Outsource'],
+      applicationVersion: '11.3.1',
       procurementItemPermissions: 'admin-manager-full-executive-create-and-stage-update',
       procurementStageSync: 'database-confirmed-atomic-idempotent-realtime',
       bulkUploadMode: 'validated-atomic-supabase-import',

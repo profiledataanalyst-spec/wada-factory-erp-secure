@@ -1,0 +1,32 @@
+Profile Solutions ERP v11.3.1 validation run
+UTC: 2026-08-06T12:46:59Z
+
+Project check passed: Profile Solutions ERP v11.3.1 uses erp_records-only Section bulk upload, protected Section assignment, assigned-only Executive work, Section dashboards, filters, reports and realtime shared data.
+Stability test passed: two consecutive confirmed stage updates succeed and stale writes are rejected.
+Project Line Items tests passed: Section, UOM, quantities, atomic erp_records saves, deletes and version checks are present.
+Project/Production synchronization tests passed: one erp_records source, confirmed response reconciliation, linked deletion and Section assignment are present.
+Section assignment tests passed: upload validation, erp_records persistence, protected assignment, assigned-only Executive work, dashboards, filters, reports and readiness checks are linked.
+
+> profile-solutions-procurement-erp@11.3.1 audit
+> node scripts/audit.mjs
+
+
+[Project structure audit]
+Project check passed: Profile Solutions ERP v11.3.1 uses erp_records-only Section bulk upload, protected Section assignment, assigned-only Executive work, Section dashboards, filters, reports and realtime shared data.
+
+[Data synchronization simulation]
+Stability test passed: two consecutive confirmed stage updates succeed and stale writes are rejected.
+
+[Project line-item tests]
+Project Line Items tests passed: Section, UOM, quantities, atomic erp_records saves, deletes and version checks are present.
+
+[Project/Production sync tests]
+Project/Production synchronization tests passed: one erp_records source, confirmed response reconciliation, linked deletion and Section assignment are present.
+
+[Section assignment tests]
+Section assignment tests passed: upload validation, erp_records persistence, protected assignment, assigned-only Executive work, dashboards, filters, reports and readiness checks are linked.
+Asset audit: index 1518 bytes; JavaScript 213421 bytes; CSS 64104 bytes.
+Network audit: 2 explicit authoritative full-reload path(s); normal Realtime changes remain incremental.
+Technical audit passed. Live Supabase migration and deployed multi-browser role verification are still required.
+
+Mock project-line-items API test passed.

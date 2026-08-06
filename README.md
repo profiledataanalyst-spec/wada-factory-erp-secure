@@ -1,43 +1,52 @@
-# Profile Solutions Procurement ERP v11.3.0
+# Profile Solutions Factory ERP v11.3.1
 
-This release preserves the current ERP and adds the approved **Section Assignment & Dashboard Integration** for Aluminium, Store, Fabrication and Outsource. See `SECTION_ASSIGNMENT_IMPLEMENTATION.md` and `REDEPLOY_V11.3.0.md`.
+This release preserves the existing ERP UI, authentication, roles, production stages, dashboards and workflows while adding the approved **Section Assignment & Dashboard Integration**.
 
-# Profile Solutions Procurement ERP
+## Approved Sections
 
-Version **11.1.0** is a minimal in-place conversion of the existing ERP source application.
+- Aluminium
+- Store
+- Fabrication
+- Outsource
 
-## What changed
-
-- User-facing application name changed to **Profile Solutions Procurement ERP**.
-- Existing UI, navigation, roles, authentication, database, APIs and features are retained.
-- The tracker now uses seven stages:
-  1. Planning
-  2. Cutting
-  3. Fabrication
-  4. Grinding
-  5. Pre-Coating
-  6. Powder Coating
-  7. Ready for Dispatch
-- Existing records using removed historical stages are safely aligned through `supabase/005_procurement_stage_alignment.sql`.
-
-## Runtime architecture
+## Architecture
 
 - Static HTML/CSS/JavaScript frontend
-- Supabase Authentication and PostgreSQL
-- Supabase Realtime
+- Supabase Authentication
+- Supabase PostgreSQL and Realtime
 - Protected Netlify Functions
-- Atomic/idempotent mutation RPC from migration 004
+- `public.erp_records` is the single source of truth for operational data
+- Atomic and idempotent mutations through migration 004
+- Section assignment through `supabase/005_section_assignment_erp_records.sql`
 
-## Validate
+This release does **not** require a `project_line_items` table.
+
+## Included Section integration
+
+- Required `SECTION` column in Excel/CSV bulk upload
+- Strict allowed-value validation
+- Section in Projects Add Items and Production Tracker
+- Super Admin/Manager assignment by Project + Section
+- Assigned-only Executive work dashboard
+- Factory Overview Section Summary
+- Section search, filters, reports and exports
+- Database-confirmed saves and existing Realtime synchronization
+
+## Validation
 
 ```cmd
+node scripts\check.mjs
+node scripts\stability-tests.mjs
+node scripts\project-line-items-tests.mjs
+node scripts\project-items-sync-tests.mjs
+node scripts\section-assignment-tests.mjs
 npm run audit
 ```
 
-## Deploy
+## Deployment
 
-Follow `REDEPLOY_PROCUREMENT_ERP.md`.
+Follow `REDEPLOY_V11.3.1.md`.
 
 ## Security
 
-Keep `SUPABASE_SECRET_KEY` only in protected Netlify Function environment variables. Never place it in browser code or a public repository.
+Keep `SUPABASE_SECRET_KEY` only in protected hosting-function environment variables. Never place it in browser code or a public repository.

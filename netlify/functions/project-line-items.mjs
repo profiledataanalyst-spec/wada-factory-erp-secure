@@ -1,4 +1,8 @@
 const SECTIONS = ['Aluminium', 'Store', 'Fabrication', 'Outsource'];
+const PRODUCTION_STAGES = [
+  'PLANNING', 'CUTTING', 'FABRICATION', 'GRINDING',
+  'PRE-COATING', 'POWDER COATING', 'READY FOR DISPATCH',
+];
 
 const JSON_HEADERS = {
   'Content-Type': 'application/json; charset=utf-8',
@@ -77,7 +81,7 @@ async function getCaller(request, url, publishableKey, secretKey) {
   const profiles = await sbFetch(
     url,
     secretKey,
-    `/rest/v1/profiles?id=eq.${encodeURIComponent(user.id)}&select=id,full_name,email,role,status&limit=1`,
+    `/rest/v1/profiles?id=eq.${encodeURIComponent(user.id)}&select=id,full_name,email,role,status,created_by&limit=1`,
     { method: 'GET', timeoutMs: 12000 },
   );
   const profile = Array.isArray(profiles) ? profiles[0] : null;
@@ -114,51 +118,66 @@ function normalizeItems(items) {
   if (items.length > 1000) throw new HttpError(400, 'A project cannot save more than 1,000 line items in one request.');
   const ids = new Set();
   return items.map((raw, index) => {
-    const id = String(raw?.id || '').trim();
-    const normalizedId = id ? cleanRecordId(id, `Line item ${index + 1} ID`) : '';
-    if (normalizedId && ids.has(normalizedId)) throw new HttpError(400, `Duplicate line item ID found at row ${index + 1}.`);
-    if (normalizedId) ids.add(normalizedId);
+    const suppliedId = String(raw?.id || '').trim();
+    const id = suppliedId ? cleanRecordId(suppliedId, `Line item ${index + 1} ID`) : `ITM-${crypto.randomUUID()}`;
+    if (ids.has(id)) throw new HttpError(400, `Duplicate line item ID found at row ${index + 1}.`);
+    ids.add(id);
+
     const lineItemName = String(raw?.lineItemName || '').trim();
     if (!lineItemName) throw new HttpError(400, `Line Item Name is required at row ${index + 1}.`);
     if (lineItemName.length > 300) throw new HttpError(400, `Line Item Name is too long at row ${index + 1}.`);
+
     const section = canonicalSection(raw?.section);
     if (!section) throw new HttpError(400, `Section must be Aluminium, Store, Fabrication or Outsource at row ${index + 1}.`);
+
     const uom = String(raw?.uom || 'Nos.').trim();
     if (!uom) throw new HttpError(400, `UOM is required at row ${index + 1}.`);
     if (uom.length > 40) throw new HttpError(400, `UOM is too long at row ${index + 1}.`);
+
     const requiredQuantity = cleanQuantity(raw?.requiredQuantity, `Required Quantity at row ${index + 1}`);
     const dispatchQuantity = cleanQuantity(raw?.dispatchQuantity ?? 0, `Dispatch Quantity at row ${index + 1}`);
     if (requiredQuantity <= 0) throw new HttpError(400, `Required Quantity must be greater than zero at row ${index + 1}.`);
     if (dispatchQuantity < 0) throw new HttpError(400, `Dispatch Quantity cannot be negative at row ${index + 1}.`);
     if (dispatchQuantity > requiredQuantity) throw new HttpError(400, `Dispatch Quantity cannot exceed Required Quantity at row ${index + 1}.`);
-    return { id: normalizedId, lineItemName, section, uom, requiredQuantity, dispatchQuantity };
+
+    return { id, lineItemName, section, uom, requiredQuantity, dispatchQuantity };
   });
 }
 
 function mapRecord(row) {
+  const payload = row?.payload && typeof row.payload === 'object' ? row.payload : {};
+  const requiredQuantity = Number(payload.quantity || 0);
+  const dispatchQuantity = Number(payload.dispatchQuantity || 0);
   return {
-    id: String(row.id || ''),
-    projectId: String(row.project_id || ''),
-    lineItemName: String(row.line_item_name || ''),
-    section: canonicalSection(row.section),
-    assignedExecutiveId: String(row.assigned_executive_id || ''),
-    uom: String(row.uom || 'Nos.'),
-    requiredQuantity: Number(row.required_quantity || 0),
-    dispatchQuantity: Number(row.dispatch_quantity || 0),
-    pendingQuantity: Number(row.pending_quantity || 0),
-    createdAt: row.created_at || '',
-    updatedAt: row.updated_at || '',
+    id: String(row.record_id || payload.id || ''),
+    projectId: String(payload.projectId || ''),
+    lineItemName: String(payload.itemName || payload.lineItemName || ''),
+    section: canonicalSection(payload.section),
+    assignedExecutiveId: String(payload.assignedExecutiveId || ''),
+    uom: String(payload.uom || 'Nos.'),
+    requiredQuantity,
+    dispatchQuantity,
+    pendingQuantity: Number.isFinite(Number(payload.pendingQuantity))
+      ? Number(payload.pendingQuantity)
+      : Math.max(0, requiredQuantity - dispatchQuantity),
+    createdAt: payload.createdAt || row.created_at || '',
+    updatedAt: payload.updatedAt || row.updated_at || '',
+    version: row.updated_at || '',
   };
 }
 
-async function assertProjectAccess(url, secretKey, caller, projectId, write = false) {
+async function getProject(url, secretKey, projectId) {
   const rows = await sbFetch(
     url,
     secretKey,
-    `/rest/v1/erp_records?entity_type=eq.projects&record_id=eq.${encodeURIComponent(projectId)}&select=record_id,payload&limit=1`,
+    `/rest/v1/erp_records?entity_type=eq.projects&record_id=eq.${encodeURIComponent(projectId)}&select=record_id,payload,updated_at&limit=1`,
     { method: 'GET', timeoutMs: 12000 },
   );
-  const project = Array.isArray(rows) ? rows[0] : null;
+  return Array.isArray(rows) ? rows[0] || null : null;
+}
+
+async function assertProjectAccess(url, secretKey, caller, projectId, write = false) {
+  const project = await getProject(url, secretKey, projectId);
   if (!project) throw new HttpError(404, 'Project was not found.');
   if (!write) return project;
   if (caller.role === 'ADMIN') return project;
@@ -169,46 +188,148 @@ async function assertProjectAccess(url, secretKey, caller, projectId, write = fa
   return project;
 }
 
-async function listItems(url, secretKey, caller, projectId) {
-  await assertProjectAccess(url, secretKey, caller, projectId, false);
+async function fetchProjectItemRows(url, secretKey, projectId) {
   const rows = await sbFetch(
     url,
     secretKey,
-    `/rest/v1/project_line_items?project_id=eq.${encodeURIComponent(projectId)}&select=id,project_id,line_item_name,section,assigned_executive_id,uom,required_quantity,dispatch_quantity,pending_quantity,created_at,updated_at&order=created_at.asc`,
-    { method: 'GET', timeoutMs: 18000 },
+    `/rest/v1/erp_records?entity_type=eq.items&payload->>projectId=eq.${encodeURIComponent(projectId)}&select=record_id,payload,created_at,updated_at&order=created_at.asc,record_id.asc`,
+    { method: 'GET', timeoutMs: 20000 },
   );
-  return Array.isArray(rows) ? rows.map(mapRecord) : [];
+  return Array.isArray(rows) ? rows : [];
+}
+
+async function fetchLinkedRows(url, secretKey, projectId) {
+  const rows = await sbFetch(
+    url,
+    secretKey,
+    `/rest/v1/erp_records?entity_type=in.(shortages,issues)&payload->>projectId=eq.${encodeURIComponent(projectId)}&select=entity_type,record_id,payload,updated_at`,
+    { method: 'GET', timeoutMs: 20000 },
+  );
+  return Array.isArray(rows) ? rows : [];
+}
+
+async function listItems(url, secretKey, caller, projectId) {
+  await assertProjectAccess(url, secretKey, caller, projectId, false);
+  const rows = await fetchProjectItemRows(url, secretKey, projectId);
+  return rows.map(mapRecord);
+}
+
+function lineItemPayload(item, existingPayload, projectPayload, caller, now) {
+  const existing = existingPayload && typeof existingPayload === 'object' ? existingPayload : {};
+  const sectionChanged = canonicalSection(existing.section) && canonicalSection(existing.section) !== item.section;
+  const currentStage = Number.isInteger(Number(existing.currentStage)) ? Number(existing.currentStage) : 0;
+  const currentStageName = PRODUCTION_STAGES[currentStage] || PRODUCTION_STAGES[0];
+  const createdAt = existing.createdAt || now;
+  const history = Array.isArray(existing.history) ? existing.history : [];
+  const initialHistory = existing.id ? history : [{
+    id: `HIS-${crypto.randomUUID()}`,
+    stageIndex: 0,
+    stageName: PRODUCTION_STAGES[0],
+    action: 'Created',
+    status: 'In Progress',
+    updatedBy: caller.user.id,
+    updatedByName: caller.profile.full_name || caller.profile.email || caller.user.email || 'ERP User',
+    date: now,
+    remarks: 'Production item created from Projects Add Items.',
+    attachments: [],
+  }];
+
+  return {
+    ...existing,
+    id: item.id,
+    projectId: String(projectPayload?.id || existing.projectId || ''),
+    projectLineItemId: item.id,
+    itemName: item.lineItemName,
+    rawItemName: item.lineItemName,
+    section: item.section,
+    assignedExecutiveId: sectionChanged ? '' : String(existing.assignedExecutiveId || ''),
+    assignedBy: sectionChanged ? '' : String(existing.assignedBy || ''),
+    assignedAt: sectionChanged ? '' : String(existing.assignedAt || ''),
+    uom: item.uom,
+    quantity: item.requiredQuantity,
+    dispatchQuantity: item.dispatchQuantity,
+    pendingQuantity: Math.max(0, item.requiredQuantity - item.dispatchQuantity),
+    quantitySource: existing.quantitySource || 'Projects Add Items',
+    quantityVerified: true,
+    site: existing.site || projectPayload?.site || '',
+    jobNumber: existing.jobNumber || projectPayload?.jobNumber || '',
+    targetDate: existing.targetDate || projectPayload?.targetDate || '',
+    priority: existing.priority || projectPayload?.priority || 'Medium',
+    currentStage,
+    currentStageName,
+    status: existing.status || 'In Progress',
+    approvalStatus: existing.approvalStatus || '',
+    shortages: existing.shortages || '',
+    remarks: existing.remarks || '',
+    createdAt,
+    updatedAt: now,
+    history: initialHistory,
+  };
+}
+
+async function applyChanges(url, secretKey, caller, changes, requestId) {
+  try {
+    return await sbFetch(url, secretKey, '/rest/v1/rpc/apply_erp_changes', {
+      method: 'POST',
+      timeoutMs: 35000,
+      body: JSON.stringify({
+        p_request_id: requestId,
+        p_actor: caller.user.id,
+        p_changes: changes,
+      }),
+    });
+  } catch (error) {
+    const message = error?.message || '';
+    if (/apply_erp_changes|function .* does not exist|schema cache/i.test(message)) {
+      throw new HttpError(503, 'The ERP stability migration is not installed. Run supabase/004_stability_performance.sql.');
+    }
+    if (/ERP_CONFLICT\|/i.test(message) || error?.details?.code === '40001') {
+      throw new HttpError(409, 'One or more project items changed in another browser. Reload the popup and retry.');
+    }
+    throw error;
+  }
 }
 
 async function saveAll(url, secretKey, caller, projectId, items, requestId) {
-  await assertProjectAccess(url, secretKey, caller, projectId, true);
-  const result = await sbFetch(url, secretKey, '/rest/v1/rpc/save_project_line_items_with_sections', {
-    method: 'POST',
-    timeoutMs: 30000,
-    body: JSON.stringify({
-      p_project_id: projectId,
-      p_items: items,
-      p_actor: caller.user.id,
-      p_request_id: requestId,
-    }),
-  });
-  const records = Array.isArray(result?.records) ? result.records.map(record => ({
-    id: String(record.id || ''),
-    projectId: String(record.projectId || projectId),
-    lineItemName: String(record.lineItemName || ''),
-    section: canonicalSection(record.section),
-    assignedExecutiveId: String(record.assignedExecutiveId || ''),
-    uom: String(record.uom || 'Nos.'),
-    requiredQuantity: Number(record.requiredQuantity || 0),
-    dispatchQuantity: Number(record.dispatchQuantity || 0),
-    pendingQuantity: Number(record.pendingQuantity || 0),
-    createdAt: record.createdAt || '',
-    updatedAt: record.updatedAt || '',
-  })) : [];
-  const productionRecords = Array.isArray(result?.productionRecords) ? result.productionRecords.map(record => ({ ...record })) : [];
-  return { ...result, records, productionRecords };
-}
+  const projectRow = await assertProjectAccess(url, secretKey, caller, projectId, true);
+  const existingRows = await fetchProjectItemRows(url, secretKey, projectId);
+  const existingById = new Map(existingRows.map(row => [String(row.record_id), row]));
+  const incomingIds = new Set(items.map(item => item.id));
+  const deletedRows = existingRows.filter(row => !incomingIds.has(String(row.record_id)));
+  const deletedIds = new Set(deletedRows.map(row => String(row.record_id)));
+  const linkedRows = deletedIds.size ? await fetchLinkedRows(url, secretKey, projectId) : [];
+  const now = new Date().toISOString();
 
+  const changes = {
+    items: {
+      upsert: items.map(item => {
+        const existingRow = existingById.get(item.id);
+        return {
+          recordId: item.id,
+          payload: lineItemPayload(item, existingRow?.payload, { ...projectRow.payload, id: projectId }, caller, now),
+          expectedVersion: existingRow?.updated_at || '',
+        };
+      }),
+      delete: deletedRows.map(row => ({ recordId: String(row.record_id), expectedVersion: row.updated_at || '' })),
+    },
+  };
+
+  for (const entityType of ['shortages', 'issues']) {
+    const removals = linkedRows
+      .filter(row => row.entity_type === entityType && deletedIds.has(String(row.payload?.itemId || '')))
+      .map(row => ({ recordId: String(row.record_id), expectedVersion: row.updated_at || '' }));
+    if (removals.length) changes[entityType] = { upsert: [], delete: removals };
+  }
+
+  await applyChanges(url, secretKey, caller, changes, requestId);
+  const confirmedRows = await fetchProjectItemRows(url, secretKey, projectId);
+  return {
+    records: confirmedRows.map(mapRecord),
+    productionRecords: confirmedRows.map(row => ({ ...(row.payload || {}), id: String(row.record_id) })),
+    updatedItems: items.length,
+    deletedItems: deletedRows.length,
+  };
+}
 
 function normalizeAssignments(assignments) {
   if (!Array.isArray(assignments)) throw new HttpError(400, 'Section assignments must be an array.');
@@ -220,24 +341,33 @@ function normalizeAssignments(assignments) {
     if (seen.has(section)) throw new HttpError(400, `Duplicate assignment supplied for ${section}.`);
     seen.add(section);
     const executiveId = String(raw?.executiveId || '').trim();
-    if (executiveId && !/^[0-9a-f-]{36}$/i.test(executiveId)) throw new HttpError(400, `Executive ID for ${section} is invalid.`);
+    if (executiveId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(executiveId)) {
+      throw new HttpError(400, `Executive ID for ${section} is invalid.`);
+    }
     return { section, executiveId };
   });
 }
 
 async function assignSections(url, secretKey, caller, projectId, assignments, requestId) {
   await assertProjectAccess(url, secretKey, caller, projectId, true);
-  const result = await sbFetch(url, secretKey, '/rest/v1/rpc/assign_project_sections', {
-    method: 'POST',
-    timeoutMs: 30000,
-    body: JSON.stringify({
-      p_project_id: projectId,
-      p_assignments: assignments,
-      p_actor: caller.user.id,
-      p_request_id: requestId,
-    }),
-  });
-  return result && typeof result === 'object' ? result : { updatedItems: 0, productionRecords: [] };
+  try {
+    const result = await sbFetch(url, secretKey, '/rest/v1/rpc/assign_project_sections', {
+      method: 'POST',
+      timeoutMs: 30000,
+      body: JSON.stringify({
+        p_project_id: projectId,
+        p_assignments: assignments,
+        p_actor: caller.user.id,
+        p_request_id: requestId,
+      }),
+    });
+    return result && typeof result === 'object' ? result : { updatedItems: 0, productionRecords: [] };
+  } catch (error) {
+    if (/assign_project_sections|function .* does not exist|schema cache/i.test(error?.message || '')) {
+      throw new HttpError(503, 'Section Assignment migration is not installed. Run supabase/005_section_assignment_erp_records.sql.');
+    }
+    throw error;
+  }
 }
 
 export default async request => {
@@ -280,16 +410,11 @@ export default async request => {
   } catch (error) {
     let message = error?.message || 'Project line item operation failed.';
     let status = Number(error?.status) || 500;
-    if (/save_project_line_items_batch|project_line_items|schema cache|does not exist/i.test(message)) {
-      if (/does not exist|schema cache|function/i.test(message)) {
-        status = 503;
-        message = 'Project Line Items migration is not installed. Run supabase/010_project_items_production_sync.sql.';
-      }
-    }
     if (/invalid input syntax for type uuid/i.test(message)) {
       status = 400;
-      message = 'A user reference was invalid. The request was rejected without saving any partial data.';
+      message = 'A user reference was invalid. The request was rejected without saving partial data.';
     }
+    if (/Section must be|Line Item|Quantity|UOM|Request ID|Project ID|invalid/i.test(message) && status >= 500) status = 400;
     console.error('Project line items function error', { status, message, requestId });
     return response(status, { error: message, requestId, ...(error?.details || {}) });
   }

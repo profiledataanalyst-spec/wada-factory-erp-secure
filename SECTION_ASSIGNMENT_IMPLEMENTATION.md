@@ -1,8 +1,8 @@
-# Section Assignment & Dashboard Integration — v11.3.0
+# Section Assignment & Dashboard Integration — v11.3.1
 
 ## Scope
 
-This release adds only the requested Section workflow. Existing UI design, authentication, roles, production stages, Project Add Items, bulk import, reports, shortages, database synchronization and business workflows remain in place.
+This release adds only the approved Section workflow. Existing UI design, authentication, roles, production stages, dashboards, bulk-upload flow, reports, shortages and business workflows remain unchanged.
 
 ## Approved Sections
 
@@ -11,61 +11,48 @@ This release adds only the requested Section workflow. Existing UI design, authe
 - Fabrication
 - Outsource
 
-## Implemented Integration
+## Single source of truth
 
-### Bulk Upload
+All operational records continue to use the existing `public.erp_records` table. Production-item payloads store:
 
-The official Excel and CSV templates now include `SECTION` after `ITEM NAME`. Upload validation rejects blank or non-approved values and shows the source row and reason. Every valid production-item payload stores the canonical Section value in Supabase.
+```text
+section
+assignedExecutiveId
+assignedBy
+assignedAt
+```
 
-### Projects Add Items
+No `project_line_items` table is required. Project Details, Add Items, Production Tracker, Operations, Executive Dashboard, Factory Overview, shortages, reports and exports read the same confirmed production-item records.
 
-The existing popup now includes a required Section dropdown per row. `save_project_line_items_with_sections` wraps the existing atomic line-item save and synchronizes Section to the linked Production Tracker record in the same database transaction.
+## Bulk upload
 
-### Section Assignment
+The Excel and CSV templates contain `SECTION` immediately after `ITEM NAME`. Upload validation rejects blank or unsupported values and reports the source Excel row. Valid records are saved through the existing atomic shared-data API.
 
-Super Admin and Managers have an `Assign Section Work` action. They select a project and map each Section to an active Executive. The protected server function validates:
+## Projects Add Items
+
+The existing popup includes a required Section dropdown per row. Its protected API reads and writes the same `erp_records` production records used by Production Tracker. Pending Quantity remains calculated as Required Quantity minus Dispatch Quantity.
+
+## Section assignment
+
+Super Admin and Managers can map each Project + Section to an active Executive without editing uploaded rows. The server and database verify:
 
 - caller is ADMIN or MANAGER;
-- Manager owns the selected project;
+- Manager owns the project;
 - assignee is an active EXECUTIVE;
-- Manager controls or already has access to the Executive.
+- Manager may assign only an Executive they manage or one already linked to that project;
+- duplicate Section assignments are rejected;
+- repeated requests are idempotent.
 
-The assignment updates all matching project/Section production items and the normalized `project_line_items` records. The project Executive list and an in-app notification are updated as part of the same transaction.
+Assignment updates matching production records atomically and sends an in-app notification only when records actually change.
 
-### Executive Visibility
+## Executive dashboard and visibility
 
-Executive views filter production items by `assignedExecutiveId`. Their dashboard shows:
+Executives see only production items where `assignedExecutiveId` matches their authenticated user ID. Their dashboard displays Assigned Projects, Assigned Items, Section, Current Stage, Pending Tasks, Completed Tasks, Due Date and Priority.
 
-- Assigned Projects
-- Assigned Items
-- Section
-- Current Stage
-- Pending Tasks
-- Completed Tasks
-- Due Date
-- Priority
+Existing project-level permissions remain intact, while production items and task-oriented views remain assigned-only.
 
-Executives do not see another Executive's assigned production items in the dashboard, Production Tracker, project item table, shortage-linked item selector or reports.
+## Factory Overview and reporting
 
-### Factory Overview
+The Section Summary displays Total Items, Total Assigned, In Progress, Completed and Pending for each approved Section. Section is also included in search, filters, project details, Production Tracker, shortages, reports, CSV export and Excel validation results.
 
-The existing overview includes a Section Summary for each approved Section:
-
-- Total Items
-- Total Assigned
-- In Progress
-- Completed
-- Pending
-
-The summary uses the same confirmed Supabase production-item state used by Production Tracker and therefore updates through the existing mutation and Realtime architecture.
-
-### Search, Filters, Reports and Export
-
-Section is included in global search, project search, Production Tracker filters, shortage views, report filters, project reports, delay reports, shortage reports, production reports and CSV export.
-
-## Database Source of Truth
-
-- `erp_records` production payload: `section`, `assignedExecutiveId`, `assignedBy`, `assignedAt`
-- `project_line_items`: normalized Section and Executive assignment columns
-- Supabase PostgreSQL remains the single source of truth.
-- Browser LocalStorage remains limited to UI preferences.
+All values use the shared database-confirmed state and existing Supabase Realtime synchronization.

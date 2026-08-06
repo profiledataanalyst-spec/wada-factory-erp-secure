@@ -423,6 +423,9 @@ async function updateItemWorkflow(url, secretKey, caller, body) {
   const patch = normalizeWorkflowPatch(body.patch, caller.role);
   const now = new Date().toISOString();
   const basePayload = normalizeProductionItemPayload(row.payload, itemId, true);
+  if (caller.role === 'EXECUTIVE' && String(basePayload.assignedExecutiveId || '') !== String(caller.user.id)) {
+    throw new HttpError(403, 'Executives can update only production items assigned to their account.');
+  }
   const provisional = { ...basePayload, ...patch, id: itemId };
   const events = normalizeWorkflowHistory(body.historyEvents, caller, provisional, now);
   const nextPayload = validatePayload({
@@ -485,7 +488,10 @@ async function assertExecutiveItemUpdates(url, secretKey, caller, changes) {
       continue;
     }
 
-    // After creation, Executives can update the production workflow fields only.
+    // After creation, Executives can update only production items assigned to their account.
+    if (String(existing.assignedExecutiveId || '') !== String(caller.user.id)) {
+      throw new Error('Executives can update only production items assigned to their account.');
+    }
     for (const key of Object.keys(record.payload)) {
       if (!EXECUTIVE_ITEM_FIELDS.has(key)) throw new Error(`Executives cannot change production item field: ${key}`);
       if (!EXECUTIVE_MUTABLE_ITEM_FIELDS.has(key) && canonical(record.payload[key]) !== canonical(existing[key])) {

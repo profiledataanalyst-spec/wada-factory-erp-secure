@@ -116,7 +116,7 @@
     { id: 'settings', label: 'Settings & Backup', icon: ICONS.settings, roles: ['ADMIN'], section: 'Administration' }
   ];
 
-  const APP_VERSION = '11.3.0';
+  const APP_VERSION = '11.3.1';
   const API_TIMEOUT_MS = 22000;
   const SESSION_REFRESH_WINDOW_SECONDS = 90;
   const TRANSIENT_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
@@ -327,7 +327,7 @@
   function manageableExecutives(managerId = getCurrentUser()?.id) {
     if (!managerId) return [];
     const assigned = new Set(state.projects.filter(p => p.managerId === managerId).flatMap(p => p.executiveIds || []));
-    return state.users.filter(u => u.role === 'EXECUTIVE' && (u.createdBy === managerId || assigned.has(u.id)));
+    return state.users.filter(u => u.role === 'EXECUTIVE' && u.status === 'Active' && (u.createdBy === managerId || assigned.has(u.id)));
   }
   function canManageUser(target) {
     const current = getCurrentUser();
